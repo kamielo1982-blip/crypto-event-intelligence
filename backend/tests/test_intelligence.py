@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from app.services.intelligence import (
     attach_moving_averages,
     calculate_kimchi_premium,
+    calculate_live_kimchi_premium,
     calculate_supply_delta,
     normalize_market_chart_payload,
     normalize_ohlc_payload,
@@ -84,6 +85,23 @@ class IntelligenceTests(unittest.TestCase):
         self.assertAlmostEqual(result["korean_price_usd"], 103.7037, places=4)
         self.assertAlmostEqual(result["premium_pct"], 3.7037, places=4)
         self.assertEqual(score_kimchi_premium(result["premium_pct"]), 46)
+
+    def test_live_kimchi_premium_uses_live_fx_not_fixed_rate(self) -> None:
+        result = calculate_live_kimchi_premium(
+            global_price_usd=61_292.97,
+            korean_price_krw=93_000_000,
+            usd_krw=1545.528364,
+            usdt_krw_reference=1518,
+        )
+
+        self.assertAlmostEqual(result["premium_pct"], -1.83, places=2)
+        self.assertAlmostEqual(result["usdt_basis_premium_pct"], -0.05, places=2)
+
+    def test_live_kimchi_premium_returns_missing_when_fx_is_missing(self) -> None:
+        result = calculate_live_kimchi_premium(global_price_usd=61_292.97, korean_price_krw=93_000_000, usd_krw=None)
+
+        self.assertIsNone(result["korean_price_usd"])
+        self.assertIsNone(result["premium_pct"])
 
 
 if __name__ == "__main__":

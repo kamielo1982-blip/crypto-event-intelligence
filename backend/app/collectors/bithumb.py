@@ -26,6 +26,22 @@ def fetch_candlesticks(
     return payload, latency_ms
 
 
+def fetch_ticker(
+    order_currency: str,
+    payment_currency: str = "KRW",
+    timeout_seconds: int = 10,
+    api_base_url: str = "https://api.bithumb.com",
+) -> tuple[dict, float]:
+    pair = f"{order_currency.upper()}_{payment_currency.upper()}"
+    url = f"{api_base_url.rstrip('/')}/public/ticker/{pair}"
+    request = Request(url, headers=_headers())
+    started = time.perf_counter()
+    with urlopen(request, timeout=timeout_seconds) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    latency_ms = (time.perf_counter() - started) * 1000
+    return payload, latency_ms
+
+
 def normalize_candlesticks(payload: dict | list, market: str, source: str = "bithumb", limit: int | None = None) -> list[dict]:
     rows = payload.get("data", []) if isinstance(payload, dict) else payload
     if limit is not None:
@@ -54,6 +70,23 @@ def normalize_candlesticks(payload: dict | list, market: str, source: str = "bit
             }
         )
     return sorted(candles, key=lambda item: item["opened_at"])
+
+
+def normalize_ticker(payload: dict, market: str, source: str = "bithumb") -> dict:
+    row = payload.get("data", {}) if isinstance(payload, dict) else {}
+    if not isinstance(row, dict):
+        row = {}
+    normalized_market = market.upper()
+    return {
+        "exchange": "bithumb",
+        "market": normalized_market,
+        "base_currency": _base_currency(normalized_market),
+        "quote_currency": _quote_currency(normalized_market),
+        "price": _safe_float(row.get("closing_price")),
+        "observed_at": _datetime_from_any(row.get("date")) or datetime.now(timezone.utc),
+        "source": source,
+        "raw_payload": payload,
+    }
 
 
 def demo_candlesticks(market: str, days: int = 365, usd_krw: float = 1350.0) -> dict:
@@ -145,6 +178,12 @@ def _quote_currency(market: str) -> str:
     if "_" in market:
         return market.split("_", 1)[1].upper()
     return "KRW"
+
+
+def _base_currency(market: str) -> str:
+    if "_" in market:
+        return market.split("_", 1)[0].upper()
+    return market.upper()
 
 
 def _safe_float(value: object) -> float | None:

@@ -83,15 +83,15 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
       .sort((left, right) => (exchangeRank[left.exchange] ?? 99) - (exchangeRank[right.exchange] ?? 99))
       .map((series) => ({
         id: `${series.exchange}:${series.market}`,
-        label: `${exchangeLabel(series.exchange)} ${series.market}`,
-        detail: series.quote_currency,
+        label: `${exchangeLabel(series.exchange)} ${series.market}${sourceBadge(series.candles)}`,
+        detail: `${series.quote_currency}${sourceBadge(series.candles)}`,
         candles: series.candles as PriceCandle[]
       }));
     if (overview.price_candles.length > 0) {
       exchangeSources.push({
         id: "coingecko",
-        label: "CoinGecko USD",
-        detail: "fallback",
+        label: `CoinGecko USD${sourceBadge(overview.price_candles)}`,
+        detail: overview.price_candles.some((candle) => candle.source === "demo_fallback") ? "demo fallback" : "fallback",
         candles: overview.price_candles
       });
     }
@@ -170,7 +170,7 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
               <div>
                 <h3 className="text-sm font-semibold tracking-normal text-ink">{selectedSymbol} Price Action</h3>
                 <p className="text-xs text-muted">
-                  {selectedCandles.length || 0} candles · {selectedChartSource?.label || "No source"} · {overview?.timeline_events.length || 0} events · {overview?.window || window}
+                  {selectedCandles.length || 0} candles · {selectedChartSource?.label || "No source"} · {selectedChartSource?.detail || "-"} · {overview?.timeline_events.length || 0} events · {overview?.window || window}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -378,4 +378,9 @@ function exchangeLabel(exchange: string): string {
   if (exchange === "upbit") return "Upbit";
   if (exchange === "bithumb") return "Bithumb";
   return exchange;
+}
+
+function sourceBadge(candles: PriceCandle[]): string {
+  if (candles.length === 0) return "";
+  return candles.some((candle) => candle.source === "demo_fallback") ? " (Demo)" : "";
 }

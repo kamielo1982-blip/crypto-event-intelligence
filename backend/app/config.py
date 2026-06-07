@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     binance_api_base_url: str = "https://data-api.binance.vision"
     upbit_api_base_url: str = "https://api.upbit.com"
     bithumb_api_base_url: str = "https://api.bithumb.com"
+    fx_api_base_url: str = "https://open.er-api.com/v6/latest"
+    live_data_stale_after_seconds: int = 900
     usd_krw_rate: float = 1350.0
     openai_api_key: str | None = None
     openai_model: str = "local-heuristic"

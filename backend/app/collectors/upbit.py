@@ -59,6 +59,20 @@ def fetch_day_candle_history(
     return rows[:days], total_latency
 
 
+def fetch_ticker(
+    market: str,
+    timeout_seconds: int = 10,
+    api_base_url: str = "https://api.upbit.com",
+) -> tuple[list[dict], float]:
+    url = f"{api_base_url.rstrip('/')}/v1/ticker?{urlencode({'markets': market.upper()})}"
+    request = Request(url, headers=_headers())
+    started = time.perf_counter()
+    with urlopen(request, timeout=timeout_seconds) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    latency_ms = (time.perf_counter() - started) * 1000
+    return payload, latency_ms
+
+
 def normalize_day_candles(payload: list[dict], market: str, source: str = "upbit") -> list[dict]:
     candles = []
     for row in payload:
@@ -83,6 +97,23 @@ def normalize_day_candles(payload: list[dict], market: str, source: str = "upbit
             }
         )
     return sorted(candles, key=lambda item: item["opened_at"])
+
+
+def normalize_ticker(payload: list[dict] | dict, market: str, source: str = "upbit") -> dict:
+    row = payload[0] if isinstance(payload, list) and payload else payload
+    if not isinstance(row, dict):
+        row = {}
+    normalized_market = str(row.get("market") or market).upper()
+    return {
+        "exchange": "upbit",
+        "market": normalized_market,
+        "base_currency": _base_currency(normalized_market),
+        "quote_currency": _quote_currency(normalized_market),
+        "price": _safe_float(row.get("trade_price")),
+        "observed_at": _datetime_from_millis(row.get("timestamp")) or datetime.now(timezone.utc),
+        "source": source,
+        "raw_payload": row,
+    }
 
 
 def demo_day_candles(market: str, days: int = 365, usd_krw: float = 1350.0) -> list[dict]:
@@ -132,6 +163,12 @@ def _quote_currency(market: str) -> str:
     return "KRW"
 
 
+def _base_currency(market: str) -> str:
+    if "-" in market:
+        return market.split("-", 1)[1].upper()
+    return market.upper()
+
+
 def _parse_datetime(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -143,6 +180,15 @@ def _parse_datetime(value: object) -> datetime | None:
     try:
         return datetime.fromisoformat(normalized).astimezone(timezone.utc)
     except ValueError:
+        return None
+
+
+def _datetime_from_millis(value: object) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value) / 1000, tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
         return None
 
 

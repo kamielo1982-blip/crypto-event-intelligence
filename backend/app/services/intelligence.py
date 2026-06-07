@@ -134,6 +134,20 @@ def calculate_kimchi_premium(global_price_usd: float | None, korean_price_krw: f
     return {"korean_price_usd": korean_price_usd, "premium_pct": premium_pct}
 
 
+def calculate_live_kimchi_premium(
+    global_price_usd: float | None,
+    korean_price_krw: float | None,
+    usd_krw: float | None,
+    usdt_krw_reference: float | None = None,
+) -> dict:
+    primary = calculate_kimchi_premium(global_price_usd, korean_price_krw, usd_krw)
+    usdt_basis = calculate_kimchi_premium(global_price_usd, korean_price_krw, usdt_krw_reference)
+    return {
+        **primary,
+        "usdt_basis_premium_pct": usdt_basis["premium_pct"],
+    }
+
+
 def score_kimchi_premium(premium_pct: float | None) -> int:
     return score_abs_change(premium_pct, medium=2.0, high=8.0)
 

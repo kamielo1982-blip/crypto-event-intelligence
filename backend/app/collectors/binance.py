@@ -27,6 +27,21 @@ def fetch_klines(
     return payload, latency_ms
 
 
+def fetch_ticker_price(
+    symbol: str,
+    timeout_seconds: int = 10,
+    api_base_url: str = "https://data-api.binance.vision",
+) -> tuple[dict, float]:
+    params = urlencode({"symbol": symbol.upper()})
+    url = f"{api_base_url.rstrip('/')}/api/v3/ticker/price?{params}"
+    request = Request(url, headers=_headers())
+    started = time.perf_counter()
+    with urlopen(request, timeout=timeout_seconds) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    latency_ms = (time.perf_counter() - started) * 1000
+    return payload, latency_ms
+
+
 def normalize_klines(payload: list[list], symbol: str, source: str = "binance") -> list[dict]:
     candles = []
     for row in payload:
@@ -51,6 +66,26 @@ def normalize_klines(payload: list[list], symbol: str, source: str = "binance") 
             }
         )
     return sorted(candles, key=lambda item: item["opened_at"])
+
+
+def normalize_ticker_price(
+    payload: dict,
+    symbol: str,
+    source: str = "binance",
+    observed_at: datetime | None = None,
+) -> dict:
+    market = str(payload.get("symbol") or symbol).upper()
+    quote = _quote_currency(market)
+    return {
+        "exchange": "binance",
+        "market": market,
+        "base_currency": _base_currency(market, quote),
+        "quote_currency": quote,
+        "price": _safe_float(payload.get("price")),
+        "observed_at": observed_at or datetime.now(timezone.utc),
+        "source": source,
+        "raw_payload": payload,
+    }
 
 
 def demo_klines(symbol: str, days: int = 365) -> list[list]:
@@ -101,6 +136,14 @@ def _quote_currency(symbol: str) -> str:
         if normalized.endswith(quote):
             return quote
     return "UNKNOWN"
+
+
+def _base_currency(symbol: str, quote_currency: str | None = None) -> str:
+    normalized = symbol.upper()
+    quote = quote_currency or _quote_currency(normalized)
+    if quote != "UNKNOWN" and normalized.endswith(quote):
+        return normalized[: -len(quote)]
+    return normalized
 
 
 def _base_price(symbol: str) -> float:

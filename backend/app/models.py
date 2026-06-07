@@ -120,6 +120,77 @@ class ExchangeCandle(Base):
     )
 
 
+class ExchangeTickerSnapshot(Base):
+    __tablename__ = "exchange_ticker_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("assets.id"), index=True)
+    collection_run_id: Mapped[int | None] = mapped_column(ForeignKey("collection_runs.id"), index=True)
+    exchange: Mapped[str] = mapped_column(String(32), index=True)
+    market: Mapped[str] = mapped_column(String(40), index=True)
+    base_currency: Mapped[str] = mapped_column(String(16), index=True)
+    quote_currency: Mapped[str] = mapped_column(String(16), index=True)
+    price: Mapped[float | None] = mapped_column(Float)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    source: Mapped[str] = mapped_column(String(64), default="unknown")
+    raw_payload: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (
+        UniqueConstraint("collection_run_id", "exchange", "market", name="uq_exchange_ticker_run_exchange_market"),
+        Index("ix_exchange_ticker_asset_exchange_observed", "asset_id", "exchange", "observed_at"),
+    )
+
+
+class FxRateSnapshot(Base):
+    __tablename__ = "fx_rate_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    collection_run_id: Mapped[int | None] = mapped_column(ForeignKey("collection_runs.id"), index=True)
+    base_currency: Mapped[str] = mapped_column(String(16), index=True)
+    quote_currency: Mapped[str] = mapped_column(String(16), index=True)
+    rate: Mapped[float | None] = mapped_column(Float)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(64), default="unknown")
+    raw_payload: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (
+        UniqueConstraint("collection_run_id", "base_currency", "quote_currency", "source", name="uq_fx_rate_run_pair_source"),
+        Index("ix_fx_rate_pair_observed", "base_currency", "quote_currency", "observed_at"),
+    )
+
+
+class LiveKimchiPremiumSnapshot(Base):
+    __tablename__ = "live_kimchi_premium_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"), index=True)
+    collection_run_id: Mapped[int | None] = mapped_column(ForeignKey("collection_runs.id"), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    global_exchange: Mapped[str] = mapped_column(String(32), default="binance", index=True)
+    global_market: Mapped[str] = mapped_column(String(40))
+    korean_exchange: Mapped[str] = mapped_column(String(32), index=True)
+    korean_market: Mapped[str] = mapped_column(String(40))
+    global_price_usd: Mapped[float | None] = mapped_column(Float)
+    korean_price_krw: Mapped[float | None] = mapped_column(Float)
+    usd_krw: Mapped[float | None] = mapped_column(Float)
+    fx_source: Mapped[str | None] = mapped_column(String(64))
+    usdt_krw_reference: Mapped[float | None] = mapped_column(Float)
+    korean_price_usd: Mapped[float | None] = mapped_column(Float)
+    premium_pct: Mapped[float | None] = mapped_column(Float)
+    usdt_basis_premium_pct: Mapped[float | None] = mapped_column(Float)
+    basis: Mapped[str] = mapped_column(String(64), default="usd_krw_live_fx")
+    data_age_seconds: Mapped[float | None] = mapped_column(Float)
+    availability: Mapped[str] = mapped_column(String(32), default="unavailable", index=True)
+    source: Mapped[str] = mapped_column(String(64), default="live_ticker")
+    raw_payload: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (
+        UniqueConstraint("collection_run_id", "asset_id", "korean_exchange", name="uq_live_kimchi_run_asset_exchange"),
+        Index("ix_live_kimchi_asset_observed", "asset_id", "observed_at"),
+    )
+
+
 class KimchiPremiumSnapshot(Base):
     __tablename__ = "kimchi_premium_snapshots"
 

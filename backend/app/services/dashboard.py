@@ -9,7 +9,7 @@ from app.models import (
     AIInterpretation,
     Asset,
     ExchangeCandle,
-    KimchiPremiumSnapshot,
+    LiveKimchiPremiumSnapshot,
     MarketSnapshot,
     NewsItem,
     OnchainSnapshot,
@@ -282,9 +282,13 @@ def _exchange_candle_series(session: Session, asset_id: int, since: datetime | N
 
 
 def _kimchi_premium_series(session: Session, asset_id: int, since: datetime | None) -> list[dict]:
-    query = select(KimchiPremiumSnapshot).where(KimchiPremiumSnapshot.asset_id == asset_id).order_by(asc(KimchiPremiumSnapshot.observed_at))
+    query = (
+        select(LiveKimchiPremiumSnapshot)
+        .where(LiveKimchiPremiumSnapshot.asset_id == asset_id)
+        .order_by(asc(LiveKimchiPremiumSnapshot.observed_at))
+    )
     if since is not None:
-        query = query.where(KimchiPremiumSnapshot.observed_at >= since)
+        query = query.where(LiveKimchiPremiumSnapshot.observed_at >= since)
     rows = session.scalars(query).all()
     return [_kimchi_snapshot_to_dict(row) for row in rows]
 
@@ -293,19 +297,25 @@ def _kimchi_premium_latest(points: list[dict]) -> dict | None:
     if not points:
         return None
     latest_at = max(point["observed_at"] for point in points)
-    latest_points = [point for point in points if point["observed_at"] == latest_at and point["premium_pct"] is not None]
-    if not latest_points:
-        return None
-    average = sum(point["premium_pct"] for point in latest_points) / len(latest_points)
-    max_abs = max(latest_points, key=lambda point: abs(point["premium_pct"]))
+    latest_points = [point for point in points if point["observed_at"] == latest_at]
+    priced_points = [point for point in latest_points if point["premium_pct"] is not None]
+    average = sum(point["premium_pct"] for point in priced_points) / len(priced_points) if priced_points else None
+    max_abs = max(priced_points, key=lambda point: abs(point["premium_pct"])) if priced_points else None
     score = score_kimchi_premium(average)
+    availability = _kimchi_latest_availability(latest_points)
     return {
         "observed_at": latest_at,
         "average_premium_pct": average,
-        "max_abs_premium_pct": max_abs["premium_pct"],
+        "max_abs_premium_pct": max_abs["premium_pct"] if max_abs else None,
         "score": score,
         "direction": _direction(average),
-        "summary": _kimchi_summary(average),
+        "summary": _kimchi_summary(average, availability),
+        "basis": _first_present(latest_points, "basis"),
+        "fx_source": _first_present(latest_points, "fx_source"),
+        "usd_krw": _first_present(latest_points, "usd_krw"),
+        "usdt_krw_reference": _first_present(latest_points, "usdt_krw_reference"),
+        "data_age_seconds": _max_present(latest_points, "data_age_seconds"),
+        "availability": availability,
         "exchanges": latest_points,
     }
 
@@ -500,7 +510,7 @@ def _factor_impacts(
             "score": kimchi_score,
             "direction": kimchi_premium_latest["direction"] if kimchi_premium_latest else "neutral",
             "summary": kimchi_premium_latest["summary"] if kimchi_premium_latest else "국내 KRW 거래소와 Binance USDT 기준 가격차 데이터가 아직 없습니다.",
-            "availability": "partial" if kimchi_premium_latest else "unavailable",
+            "availability": kimchi_premium_latest["availability"] if kimchi_premium_latest else "unavailable",
             "confidence": _score_confidence(kimchi_score),
         },
     ]
@@ -570,7 +580,7 @@ def _exchange_candle_to_dict(row: dict) -> dict:
     }
 
 
-def _kimchi_snapshot_to_dict(row: KimchiPremiumSnapshot) -> dict:
+def _kimchi_snapshot_to_dict(row: LiveKimchiPremiumSnapshot) -> dict:
     premium = row.premium_pct
     return {
         "observed_at": row.observed_at.isoformat(),
@@ -581,8 +591,14 @@ def _kimchi_snapshot_to_dict(row: KimchiPremiumSnapshot) -> dict:
         "global_price_usd": row.global_price_usd,
         "korean_price_krw": row.korean_price_krw,
         "usd_krw": row.usd_krw,
+        "fx_source": row.fx_source,
+        "usdt_krw_reference": row.usdt_krw_reference,
         "korean_price_usd": row.korean_price_usd,
         "premium_pct": premium,
+        "usdt_basis_premium_pct": row.usdt_basis_premium_pct,
+        "basis": row.basis,
+        "data_age_seconds": row.data_age_seconds,
+        "availability": row.availability,
         "score": score_kimchi_premium(premium),
         "direction": _direction(premium),
         "source": row.source,
@@ -634,6 +650,32 @@ def _score_confidence(score: int | float) -> str:
     return "low"
 
 
+def _kimchi_latest_availability(points: list[dict]) -> str:
+    if not points:
+        return "unavailable"
+    statuses = {point.get("availability") for point in points}
+    if "stale" in statuses:
+        return "stale"
+    if "complete" in statuses:
+        return "complete"
+    if "partial" in statuses:
+        return "partial"
+    return "unavailable"
+
+
+def _first_present(points: list[dict], key: str):
+    for point in points:
+        value = point.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _max_present(points: list[dict], key: str):
+    values = [point.get(key) for point in points if point.get(key) is not None]
+    return max(values) if values else None
+
+
 def _direction(value: float | None) -> str:
     if value is None or value == 0:
         return "neutral"
@@ -656,7 +698,11 @@ def _supply_summary(latest_supply: dict | None) -> str:
     return "순공급 변화 계산에 필요한 데이터가 부족합니다."
 
 
-def _kimchi_summary(premium_pct: float | None) -> str:
+def _kimchi_summary(premium_pct: float | None, availability: str = "complete") -> str:
+    if availability == "unavailable":
+        return "실시간 김치프리미엄 계산에 필요한 live ticker 또는 USD/KRW 환율 데이터가 부족합니다."
+    if availability == "stale":
+        return "실시간 김치프리미엄 데이터가 오래되어 최신 시장 상태와 다를 수 있습니다."
     if premium_pct is None:
         return "김치프리미엄 계산에 필요한 가격 또는 환율 데이터가 부족합니다."
     if premium_pct >= 5:

@@ -8,10 +8,14 @@ from sqlalchemy.orm import Session
 
 from app.collectors.binance import demo_klines as demo_binance_klines
 from app.collectors.binance import fetch_klines as fetch_binance_klines
+from app.collectors.binance import fetch_ticker_price as fetch_binance_ticker_price
 from app.collectors.binance import normalize_klines as normalize_binance_klines
+from app.collectors.binance import normalize_ticker_price as normalize_binance_ticker_price
 from app.collectors.bithumb import demo_candlesticks as demo_bithumb_candlesticks
 from app.collectors.bithumb import fetch_candlesticks as fetch_bithumb_candlesticks
+from app.collectors.bithumb import fetch_ticker as fetch_bithumb_ticker
 from app.collectors.bithumb import normalize_candlesticks as normalize_bithumb_candlesticks
+from app.collectors.bithumb import normalize_ticker as normalize_bithumb_ticker
 from app.collectors.coingecko import (
     demo_market_chart_payload,
     demo_market_payload,
@@ -20,18 +24,24 @@ from app.collectors.coingecko import (
     fetch_coin_markets,
     fetch_coin_ohlc,
 )
+from app.collectors.fx import fetch_usd_rates, normalize_open_er_rate
 from app.collectors.news_rss import demo_news_payload, fetch_rss_news
 from app.collectors.onchain_stub import demo_onchain_payload
 from app.collectors.upbit import demo_day_candles as demo_upbit_day_candles
 from app.collectors.upbit import fetch_day_candle_history as fetch_upbit_day_candle_history
+from app.collectors.upbit import fetch_ticker as fetch_upbit_ticker
 from app.collectors.upbit import normalize_day_candles as normalize_upbit_day_candles
+from app.collectors.upbit import normalize_ticker as normalize_upbit_ticker
 from app.config import Settings
 from app.models import (
     AIInterpretation,
     Asset,
     CollectionRun,
     ExchangeCandle,
+    ExchangeTickerSnapshot,
+    FxRateSnapshot,
     KimchiPremiumSnapshot,
+    LiveKimchiPremiumSnapshot,
     MarketSnapshot,
     NewsItem,
     OnchainSnapshot,
@@ -43,7 +53,7 @@ from app.models import (
 )
 from app.seed import seed_defaults
 from app.services.ai_interpreter import LocalHeuristicInterpreter
-from app.services.intelligence import calculate_kimchi_premium, normalize_market_chart_payload, normalize_ohlc_payload
+from app.services.intelligence import calculate_kimchi_premium, calculate_live_kimchi_premium, normalize_market_chart_payload, normalize_ohlc_payload
 from app.services.news import dedupe_news_items
 from app.services.signal_engine import build_market_signals, build_news_signals, build_onchain_signals, build_supply_signals
 
@@ -55,7 +65,16 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
     session.commit()
 
     assets = session.scalars(select(Asset).where(Asset.is_active.is_(True)).order_by(Asset.group, Asset.rank)).all()
-    summary = {"market": "pending", "news": "pending", "onchain": "pending", "exchange_candles": "pending", "kimchi_premium": "pending"}
+    summary = {
+        "market": "pending",
+        "news": "pending",
+        "onchain": "pending",
+        "exchange_candles": "pending",
+        "kimchi_premium": "pending",
+        "exchange_tickers": "pending",
+        "fx_rate": "pending",
+        "live_kimchi_premium": "pending",
+    }
     try:
         market_payload, market_source, market_latency = _collect_market_data(assets, settings)
         _store_market_snapshots(session, run, assets, market_payload, market_source)
@@ -87,6 +106,28 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
         summary["kimchi_premium"] = "failed"
 
     try:
+        live_counts, live_source, live_latency = _collect_live_tickers_and_kimchi(session, run, assets, settings)
+        _record_source_health(session, "binance_tickers", live_counts.get("binance", 0) > 0, live_latency, f"{live_counts.get('binance', 0)} tickers")
+        _record_source_health(session, "upbit_tickers", live_counts.get("upbit", 0) > 0, live_latency, f"{live_counts.get('upbit', 0)} tickers")
+        _record_source_health(session, "bithumb_tickers", live_counts.get("bithumb", 0) > 0, live_latency, f"{live_counts.get('bithumb', 0)} tickers")
+        _record_source_health(session, "fx_rate_usd_krw", live_counts.get("fx_rate", 0) > 0, live_latency, f"{live_counts.get('fx_rate', 0)} rates")
+        _record_source_health(
+            session,
+            "live_kimchi_premium",
+            live_counts.get("live_kimchi_premium", 0) > 0,
+            live_latency,
+            f"{live_counts.get('live_kimchi_premium', 0)} snapshots, {live_counts.get('unavailable', 0)} unavailable",
+        )
+        summary["exchange_tickers"] = live_source
+        summary["fx_rate"] = "open_er_api" if live_counts.get("fx_rate", 0) else "unavailable"
+        summary["live_kimchi_premium"] = "live_ticker" if live_counts.get("live_kimchi_premium", 0) else "unavailable"
+    except Exception as exc:
+        _record_source_health(session, "live_kimchi_premium", False, None, str(exc))
+        summary["exchange_tickers"] = "failed"
+        summary["fx_rate"] = "failed"
+        summary["live_kimchi_premium"] = "failed"
+
+    try:
         news_payload, news_source, news_latency = _collect_news_data(assets, settings)
         _store_news(session, news_payload)
         _record_source_health(session, "rss_news", True, news_latency, f"{len(news_payload)} items")
@@ -109,7 +150,7 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
         _record_source_health(session, "ai_interpretation", False, None, str(exc))
         summary["ai"] = "failed"
 
-    run.status = "success" if "failed" not in summary.values() else "partial"
+    run.status = "success" if not any(value in ("failed", "unavailable") for value in summary.values()) else "partial"
     run.finished_at = utcnow()
     run.raw_summary = {**summary, "signals": created_signals, "interpretations": created_interpretations}
     run.message = f"signals={created_signals}, interpretations={created_interpretations}"
@@ -255,6 +296,55 @@ def _collect_exchange_candles(session: Session, run: CollectionRun, assets: list
     return counts, "+".join(sorted(sources)) if sources else "none", (time.perf_counter() - started) * 1000
 
 
+def _collect_live_tickers_and_kimchi(session: Session, run: CollectionRun, assets: list[Asset], settings: Settings) -> tuple[dict[str, int], str, float]:
+    started = time.perf_counter()
+    counts = {"binance": 0, "upbit": 0, "bithumb": 0, "fx_rate": 0, "usdt_reference": 0, "live_kimchi_premium": 0, "unavailable": 0}
+    sources: set[str] = set()
+
+    fx_rate = _load_usd_krw_rate(settings)
+    if fx_rate:
+        _upsert_fx_rate_snapshot(session, run, fx_rate)
+        counts["fx_rate"] += 1
+        sources.add(fx_rate.get("source", "open_er_api"))
+
+    usdt_asset = next((asset for asset in assets if asset.symbol == "USDT"), None)
+    usdt_references = []
+    for ticker in (_load_upbit_ticker("KRW-USDT", settings), _load_bithumb_ticker("USDT_KRW", settings)):
+        if not ticker:
+            continue
+        _upsert_exchange_ticker(session, run, usdt_asset, ticker)
+        counts[ticker["exchange"]] += 1
+        counts["usdt_reference"] += 1
+        sources.add(ticker.get("source", ticker["exchange"]))
+        usdt_references.append(ticker)
+
+    for asset in assets:
+        if asset.group != "investable":
+            continue
+
+        binance_ticker = _load_binance_ticker(f"{asset.symbol}USDT", settings)
+        if binance_ticker:
+            _upsert_exchange_ticker(session, run, asset, binance_ticker)
+            counts["binance"] += 1
+            sources.add(binance_ticker.get("source", "binance"))
+
+        korean_tickers = [
+            _load_upbit_ticker(f"KRW-{asset.symbol}", settings),
+            _load_bithumb_ticker(f"{asset.symbol}_KRW", settings),
+        ]
+        for ticker in [item for item in korean_tickers if item]:
+            _upsert_exchange_ticker(session, run, asset, ticker)
+            counts[ticker["exchange"]] += 1
+            sources.add(ticker.get("source", ticker["exchange"]))
+            availability = _upsert_live_kimchi_snapshot(session, run, asset, binance_ticker, ticker, fx_rate, usdt_references, settings)
+            counts["live_kimchi_premium"] += 1
+            if availability == "unavailable":
+                counts["unavailable"] += 1
+
+    session.commit()
+    return counts, "+".join(sorted(sources)) if sources else "none", (time.perf_counter() - started) * 1000
+
+
 def _load_binance_candles(market: str, history_days: int, settings: Settings) -> list[dict]:
     try:
         payload, _ = fetch_binance_klines(
@@ -300,6 +390,43 @@ def _load_bithumb_candles(market: str, history_days: int, settings: Settings) ->
             raise
         payload = demo_bithumb_candlesticks(market, history_days, usd_krw=settings.usd_krw_rate)
         return normalize_bithumb_candlesticks(payload, market, source="demo_fallback", limit=history_days)
+
+
+def _load_binance_ticker(market: str, settings: Settings) -> dict | None:
+    try:
+        payload, _ = fetch_binance_ticker_price(market, api_base_url=settings.binance_api_base_url)
+        ticker = normalize_binance_ticker_price(payload, market, source="binance")
+        return ticker if ticker.get("price") is not None else None
+    except Exception:
+        return None
+
+
+def _load_upbit_ticker(market: str, settings: Settings) -> dict | None:
+    try:
+        payload, _ = fetch_upbit_ticker(market, api_base_url=settings.upbit_api_base_url)
+        ticker = normalize_upbit_ticker(payload, market, source="upbit")
+        return ticker if ticker.get("price") is not None else None
+    except Exception:
+        return None
+
+
+def _load_bithumb_ticker(market: str, settings: Settings) -> dict | None:
+    order_currency, payment_currency = market.split("_", 1)
+    try:
+        payload, _ = fetch_bithumb_ticker(order_currency, payment_currency=payment_currency, api_base_url=settings.bithumb_api_base_url)
+        ticker = normalize_bithumb_ticker(payload, market, source="bithumb")
+        return ticker if ticker.get("price") is not None else None
+    except Exception:
+        return None
+
+
+def _load_usd_krw_rate(settings: Settings) -> dict | None:
+    try:
+        payload, _ = fetch_usd_rates(api_base_url=settings.fx_api_base_url)
+        rate = normalize_open_er_rate(payload, quote_currency="KRW", source="open_er_api")
+        return rate if rate.get("rate") is not None else None
+    except Exception:
+        return None
 
 
 def _upsert_exchange_candles(session: Session, run: CollectionRun, asset: Asset, candles: list[dict]) -> int:
@@ -354,6 +481,130 @@ def _upsert_exchange_candle(session: Session, run: CollectionRun, asset: Asset, 
     existing.raw_payload = candle.get("raw_payload")
 
 
+def _upsert_exchange_ticker(session: Session, run: CollectionRun, asset: Asset | None, ticker: dict) -> None:
+    existing = session.scalar(
+        select(ExchangeTickerSnapshot).where(
+            ExchangeTickerSnapshot.collection_run_id == run.id,
+            ExchangeTickerSnapshot.exchange == ticker["exchange"],
+            ExchangeTickerSnapshot.market == ticker["market"],
+        )
+    )
+    payload = {
+        "asset_id": asset.id if asset else None,
+        "collection_run_id": run.id,
+        "exchange": ticker["exchange"],
+        "market": ticker["market"],
+        "base_currency": ticker["base_currency"],
+        "quote_currency": ticker["quote_currency"],
+        "price": ticker.get("price"),
+        "observed_at": ticker.get("observed_at") or utcnow(),
+        "source": ticker.get("source") or "unknown",
+        "raw_payload": ticker.get("raw_payload"),
+    }
+    if existing:
+        for key, value in payload.items():
+            setattr(existing, key, value)
+        return
+    session.add(ExchangeTickerSnapshot(**payload))
+
+
+def _upsert_fx_rate_snapshot(session: Session, run: CollectionRun, rate: dict) -> None:
+    existing = session.scalar(
+        select(FxRateSnapshot).where(
+            FxRateSnapshot.collection_run_id == run.id,
+            FxRateSnapshot.base_currency == rate["base_currency"],
+            FxRateSnapshot.quote_currency == rate["quote_currency"],
+            FxRateSnapshot.source == rate["source"],
+        )
+    )
+    payload = {
+        "collection_run_id": run.id,
+        "base_currency": rate["base_currency"],
+        "quote_currency": rate["quote_currency"],
+        "rate": rate.get("rate"),
+        "observed_at": rate.get("observed_at") or utcnow(),
+        "source_updated_at": rate.get("source_updated_at"),
+        "source": rate.get("source") or "unknown",
+        "raw_payload": rate.get("raw_payload"),
+    }
+    if existing:
+        for key, value in payload.items():
+            setattr(existing, key, value)
+        return
+    session.add(FxRateSnapshot(**payload))
+
+
+def _upsert_live_kimchi_snapshot(
+    session: Session,
+    run: CollectionRun,
+    asset: Asset,
+    global_ticker: dict | None,
+    korean_ticker: dict,
+    fx_rate: dict | None,
+    usdt_references: list[dict],
+    settings: Settings,
+) -> str:
+    now = utcnow()
+    observed_at = _as_utc(run.started_at) or now
+    usdt_krw_reference = _average_ticker_price(usdt_references)
+    global_price = global_ticker.get("price") if global_ticker else None
+    korean_price = korean_ticker.get("price")
+    usd_krw = fx_rate.get("rate") if fx_rate else None
+    premium = calculate_live_kimchi_premium(global_price, korean_price, usd_krw, usdt_krw_reference)
+    data_age_seconds = _max_data_age_seconds(
+        now,
+        [
+            global_ticker.get("observed_at") if global_ticker else None,
+            korean_ticker.get("observed_at"),
+            fx_rate.get("observed_at") if fx_rate else None,
+        ],
+    )
+    availability = _live_kimchi_availability(global_price, korean_price, usd_krw, data_age_seconds, settings.live_data_stale_after_seconds)
+    existing = session.scalar(
+        select(LiveKimchiPremiumSnapshot).where(
+            LiveKimchiPremiumSnapshot.collection_run_id == run.id,
+            LiveKimchiPremiumSnapshot.asset_id == asset.id,
+            LiveKimchiPremiumSnapshot.korean_exchange == korean_ticker["exchange"],
+        )
+    )
+    payload = {
+        "collection_run_id": run.id,
+        "observed_at": observed_at,
+        "global_exchange": global_ticker["exchange"] if global_ticker else "binance",
+        "global_market": global_ticker["market"] if global_ticker else f"{asset.symbol}USDT",
+        "korean_exchange": korean_ticker["exchange"],
+        "korean_market": korean_ticker["market"],
+        "global_price_usd": global_price,
+        "korean_price_krw": korean_price,
+        "usd_krw": usd_krw,
+        "fx_source": fx_rate.get("source") if fx_rate else None,
+        "usdt_krw_reference": usdt_krw_reference,
+        "korean_price_usd": premium["korean_price_usd"],
+        "premium_pct": premium["premium_pct"],
+        "usdt_basis_premium_pct": premium["usdt_basis_premium_pct"],
+        "basis": "usd_krw_live_fx",
+        "data_age_seconds": data_age_seconds,
+        "availability": availability,
+        "source": "live_ticker",
+        "raw_payload": {
+            "method": "korean_live_ticker_krw_div_live_usd_krw_vs_binance_usdt_ticker",
+            "global_source": global_ticker.get("source") if global_ticker else None,
+            "korean_source": korean_ticker.get("source"),
+            "fx_source": fx_rate.get("source") if fx_rate else None,
+            "usdt_reference_sources": [
+                {"exchange": item["exchange"], "market": item["market"], "price": item.get("price"), "observed_at": _isoformat(item.get("observed_at"))}
+                for item in usdt_references
+            ],
+        },
+    }
+    if existing:
+        for key, value in payload.items():
+            setattr(existing, key, value)
+    else:
+        session.add(LiveKimchiPremiumSnapshot(asset_id=asset.id, **payload))
+    return availability
+
+
 def _upsert_kimchi_history(
     session: Session,
     run: CollectionRun,
@@ -402,6 +653,52 @@ def _upsert_kimchi_history(
             session.add(KimchiPremiumSnapshot(asset_id=asset.id, collection_run_id=run.id, observed_at=observed_at, **payload))
         count += 1
     return count
+
+
+def _average_ticker_price(tickers: list[dict]) -> float | None:
+    prices = [float(ticker["price"]) for ticker in tickers if ticker.get("price") is not None]
+    if not prices:
+        return None
+    return sum(prices) / len(prices)
+
+
+def _max_data_age_seconds(now: datetime, observed_values: list[datetime | None]) -> float | None:
+    ages = []
+    for value in observed_values:
+        observed_at = _as_utc(value)
+        if observed_at is None:
+            continue
+        ages.append(max(0.0, (now - observed_at).total_seconds()))
+    if not ages:
+        return None
+    return max(ages)
+
+
+def _live_kimchi_availability(
+    global_price_usd: float | None,
+    korean_price_krw: float | None,
+    usd_krw: float | None,
+    data_age_seconds: float | None,
+    stale_after_seconds: int,
+) -> str:
+    if global_price_usd in (None, 0) or korean_price_krw in (None, 0) or usd_krw in (None, 0):
+        return "unavailable"
+    if data_age_seconds is not None and data_age_seconds > stale_after_seconds:
+        return "stale"
+    return "complete"
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    observed_at = _as_utc(value)
+    return observed_at.isoformat() if observed_at else None
 
 
 def _history_days(value: str) -> int | str:

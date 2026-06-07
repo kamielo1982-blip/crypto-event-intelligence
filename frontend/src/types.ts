@@ -58,8 +58,14 @@ export type KimchiPremiumPoint = {
   global_price_usd: number | null;
   korean_price_krw: number | null;
   usd_krw: number | null;
+  fx_source: string | null;
+  usdt_krw_reference: number | null;
   korean_price_usd: number | null;
   premium_pct: number | null;
+  usdt_basis_premium_pct: number | null;
+  basis: string | null;
+  data_age_seconds: number | null;
+  availability: string;
   score: number;
   direction: "up" | "down" | "neutral" | string;
   source: string;
@@ -67,11 +73,17 @@ export type KimchiPremiumPoint = {
 
 export type KimchiPremiumLatest = {
   observed_at: string;
-  average_premium_pct: number;
-  max_abs_premium_pct: number;
+  average_premium_pct: number | null;
+  max_abs_premium_pct: number | null;
   score: number;
   direction: "up" | "down" | "neutral" | string;
   summary: string;
+  basis: string | null;
+  fx_source: string | null;
+  usd_krw: number | null;
+  usdt_krw_reference: number | null;
+  data_age_seconds: number | null;
+  availability: string;
   exchanges: KimchiPremiumPoint[];
 };
 

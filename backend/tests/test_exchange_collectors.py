@@ -3,9 +3,10 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
-from app.collectors.binance import normalize_klines
-from app.collectors.bithumb import normalize_candlesticks
-from app.collectors.upbit import normalize_day_candles
+from app.collectors.binance import normalize_klines, normalize_ticker_price
+from app.collectors.bithumb import normalize_candlesticks, normalize_ticker as normalize_bithumb_ticker
+from app.collectors.fx import normalize_open_er_rate
+from app.collectors.upbit import normalize_day_candles, normalize_ticker as normalize_upbit_ticker
 
 
 class ExchangeCollectorTests(unittest.TestCase):
@@ -55,6 +56,54 @@ class ExchangeCollectorTests(unittest.TestCase):
         self.assertEqual(rows[0]["quote_currency"], "KRW")
         self.assertEqual(rows[0]["high"], 145_000_000.0)
         self.assertEqual(rows[0]["low"], 138_000_000.0)
+
+    def test_binance_ticker_normalizer_maps_live_price(self) -> None:
+        observed_at = datetime(2026, 6, 7, 12, tzinfo=timezone.utc)
+
+        row = normalize_ticker_price({"symbol": "BTCUSDT", "price": "61292.97000000"}, "BTCUSDT", observed_at=observed_at)
+
+        self.assertEqual(row["exchange"], "binance")
+        self.assertEqual(row["base_currency"], "BTC")
+        self.assertEqual(row["quote_currency"], "USDT")
+        self.assertEqual(row["price"], 61292.97)
+        self.assertEqual(row["observed_at"], observed_at)
+
+    def test_upbit_ticker_normalizer_maps_trade_price_and_timestamp(self) -> None:
+        ts = int(datetime(2026, 6, 7, 12, tzinfo=timezone.utc).timestamp() * 1000)
+
+        row = normalize_upbit_ticker([{"market": "KRW-BTC", "trade_price": 93_000_000, "timestamp": ts}], "KRW-BTC")
+
+        self.assertEqual(row["exchange"], "upbit")
+        self.assertEqual(row["base_currency"], "BTC")
+        self.assertEqual(row["quote_currency"], "KRW")
+        self.assertEqual(row["price"], 93_000_000.0)
+        self.assertEqual(row["observed_at"], datetime(2026, 6, 7, 12, tzinfo=timezone.utc))
+
+    def test_bithumb_ticker_normalizer_maps_closing_price_and_date(self) -> None:
+        ts = int(datetime(2026, 6, 7, 12, tzinfo=timezone.utc).timestamp() * 1000)
+
+        row = normalize_bithumb_ticker({"status": "0000", "data": {"closing_price": "92999000", "date": str(ts)}}, "BTC_KRW")
+
+        self.assertEqual(row["exchange"], "bithumb")
+        self.assertEqual(row["base_currency"], "BTC")
+        self.assertEqual(row["quote_currency"], "KRW")
+        self.assertEqual(row["price"], 92_999_000.0)
+        self.assertEqual(row["observed_at"], datetime(2026, 6, 7, 12, tzinfo=timezone.utc))
+
+    def test_open_er_fx_normalizer_maps_krw_rate(self) -> None:
+        row = normalize_open_er_rate(
+            {
+                "base_code": "USD",
+                "time_last_update_unix": 1_780_819_351,
+                "rates": {"KRW": 1545.528364},
+            },
+            observed_at=datetime(2026, 6, 7, 12, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(row["base_currency"], "USD")
+        self.assertEqual(row["quote_currency"], "KRW")
+        self.assertEqual(row["rate"], 1545.528364)
+        self.assertEqual(row["source"], "open_er_api")
 
 
 if __name__ == "__main__":
