@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import Session
 
-from app.collectors.coingecko import demo_market_payload, fetch_coin_markets
+from app.collectors.coingecko import (
+    demo_market_chart_payload,
+    demo_market_payload,
+    demo_ohlc_payload,
+    fetch_coin_market_chart,
+    fetch_coin_markets,
+    fetch_coin_ohlc,
+)
 from app.collectors.news_rss import demo_news_payload, fetch_rss_news
 from app.collectors.onchain_stub import demo_onchain_payload
 from app.config import Settings
@@ -17,6 +24,7 @@ from app.models import (
     MarketSnapshot,
     NewsItem,
     OnchainSnapshot,
+    PriceCandle,
     SignalEvent,
     SourceHealth,
     SupplySnapshot,
@@ -24,6 +32,7 @@ from app.models import (
 )
 from app.seed import seed_defaults
 from app.services.ai_interpreter import LocalHeuristicInterpreter
+from app.services.intelligence import normalize_market_chart_payload, normalize_ohlc_payload
 from app.services.news import dedupe_news_items
 from app.services.signal_engine import build_market_signals, build_news_signals, build_onchain_signals, build_supply_signals
 
@@ -44,6 +53,14 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
     except Exception as exc:
         _record_source_health(session, "coingecko_market", False, None, str(exc))
         summary["market"] = "failed"
+
+    try:
+        candle_count, candle_source, candle_latency = _collect_price_candles(session, run, assets, settings)
+        _record_source_health(session, "coingecko_price_candles", True, candle_latency, f"{candle_count} candles")
+        summary["price_candles"] = candle_source
+    except Exception as exc:
+        _record_source_health(session, "coingecko_price_candles", False, None, str(exc))
+        summary["price_candles"] = "failed"
 
     try:
         news_payload, news_source, news_latency = _collect_news_data(assets, settings)
@@ -128,6 +145,39 @@ def _collect_news_data(assets: list[Asset], settings: Settings) -> tuple[list[di
         return demo_news_payload(symbols), "demo_fallback", (time.perf_counter() - started) * 1000
 
 
+def _collect_price_candles(session: Session, run: CollectionRun, assets: list[Asset], settings: Settings) -> tuple[int, str, float]:
+    started = time.perf_counter()
+    created_or_updated = 0
+    sources: set[str] = set()
+    for asset in assets:
+        if asset.group != "investable" or not asset.coingecko_id:
+            continue
+        try:
+            ohlc_payload, _ = fetch_coin_ohlc(asset.coingecko_id, days=90)
+            chart_payload, _ = fetch_coin_market_chart(asset.coingecko_id, days=90)
+            source = "coingecko"
+        except Exception:
+            if not settings.enable_demo_data:
+                raise
+            ohlc_payload = demo_ohlc_payload(asset.coingecko_id, days=90)
+            chart_payload = demo_market_chart_payload(asset.coingecko_id, days=90)
+            source = "demo_fallback"
+
+        volume_by_date = _volume_by_date(chart_payload)
+        candles = normalize_ohlc_payload(ohlc_payload, source)
+        market_chart_candles = normalize_market_chart_payload(chart_payload, source)
+        if len(market_chart_candles) > len(candles):
+            candles = market_chart_candles
+        for candle in candles:
+            candle["volume_usd"] = candle.get("volume_usd") or volume_by_date.get(candle["opened_at"].date())
+            candle["raw_payload"] = {**(candle.get("raw_payload") or {}), "market_chart_volume": candle["volume_usd"]}
+            _upsert_price_candle(session, run, asset, candle)
+            created_or_updated += 1
+        sources.add(source)
+    session.commit()
+    return created_or_updated, "+".join(sorted(sources)) if sources else "none", (time.perf_counter() - started) * 1000
+
+
 def _store_market_snapshots(session: Session, run: CollectionRun, assets: list[Asset], payload: list[dict], source: str) -> None:
     by_id = {asset.coingecko_id: asset for asset in assets}
     for row in payload:
@@ -149,6 +199,52 @@ def _store_market_snapshots(session: Session, run: CollectionRun, assets: list[A
             )
         )
     session.commit()
+
+
+def _upsert_price_candle(session: Session, run: CollectionRun, asset: Asset, candle: dict) -> None:
+    existing = session.scalar(
+        select(PriceCandle).where(
+            PriceCandle.asset_id == asset.id,
+            PriceCandle.timeframe == "1d",
+            PriceCandle.opened_at == candle["opened_at"],
+        )
+    )
+    if not existing:
+        session.add(
+            PriceCandle(
+                asset_id=asset.id,
+                collection_run_id=run.id,
+                timeframe="1d",
+                opened_at=candle["opened_at"],
+                open=candle.get("open"),
+                high=candle.get("high"),
+                low=candle.get("low"),
+                close=candle.get("close"),
+                volume_usd=candle.get("volume_usd"),
+                source=candle.get("source") or "unknown",
+                raw_payload=candle.get("raw_payload"),
+            )
+        )
+        return
+
+    existing.collection_run_id = run.id
+    existing.open = candle.get("open")
+    existing.high = candle.get("high")
+    existing.low = candle.get("low")
+    existing.close = candle.get("close")
+    existing.volume_usd = candle.get("volume_usd")
+    existing.source = candle.get("source") or existing.source
+    existing.raw_payload = candle.get("raw_payload")
+
+
+def _volume_by_date(payload: dict) -> dict:
+    values = {}
+    for row in payload.get("total_volumes", []):
+        if len(row) < 2:
+            continue
+        observed_at = datetime.fromtimestamp(float(row[0]) / 1000, tz=timezone.utc)
+        values[observed_at.date()] = row[1]
+    return values
 
 
 def _store_news(session: Session, payload: list[dict]) -> None:

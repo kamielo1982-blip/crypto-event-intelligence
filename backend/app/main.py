@@ -103,9 +103,14 @@ def get_market_brief(session: Session = Depends(get_session), crypto_intel_sessi
 
 
 @app.get("/api/assets/{symbol}/overview")
-def get_asset_overview(symbol: str, session: Session = Depends(get_session), crypto_intel_session: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
+def get_asset_overview(
+    symbol: str,
+    window: str = "30d",
+    session: Session = Depends(get_session),
+    crypto_intel_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+):
     get_current_admin(crypto_intel_session, session)
-    overview = dashboard.asset_overview(session, symbol)
+    overview = dashboard.asset_overview(session, symbol, window)
     if not overview:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
     return overview

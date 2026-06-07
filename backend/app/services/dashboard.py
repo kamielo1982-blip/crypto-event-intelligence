@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session
 
-from app.models import AIInterpretation, Asset, MarketSnapshot, SignalEvent, SourceHealth
+from app.models import AIInterpretation, Asset, MarketSnapshot, NewsItem, OnchainSnapshot, PriceCandle, SignalEvent, SourceHealth, SupplySnapshot
+from app.services.intelligence import attach_moving_averages, calculate_supply_delta, score_abs_change, score_news_impact
 
 
 def _latest_market(session: Session, asset_id: int) -> MarketSnapshot | None:
@@ -56,20 +57,50 @@ def market_brief(session: Session) -> dict:
     return {"investable": investable, "stablecoins": stablecoins, "generated_at": datetime.now(timezone.utc).isoformat()}
 
 
-def asset_overview(session: Session, symbol: str) -> dict | None:
+def asset_overview(session: Session, symbol: str, window: str = "30d") -> dict | None:
     asset = session.scalar(select(Asset).where(Asset.symbol == symbol.upper(), Asset.is_active.is_(True)))
     if not asset:
         return None
+    days = _window_days(window)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     snapshots = session.scalars(
-        select(MarketSnapshot).where(MarketSnapshot.asset_id == asset.id).order_by(desc(MarketSnapshot.observed_at)).limit(80)
+        select(MarketSnapshot)
+        .where(MarketSnapshot.asset_id == asset.id, MarketSnapshot.observed_at >= since)
+        .order_by(desc(MarketSnapshot.observed_at))
+        .limit(240)
     ).all()
+    if not snapshots:
+        snapshots = session.scalars(
+            select(MarketSnapshot).where(MarketSnapshot.asset_id == asset.id).order_by(desc(MarketSnapshot.observed_at)).limit(80)
+        ).all()
+    ordered_snapshots = list(reversed(snapshots))
     signals = session.scalars(
-        select(SignalEvent).where(SignalEvent.asset_id == asset.id).order_by(desc(SignalEvent.occurred_at)).limit(40)
+        select(SignalEvent)
+        .where(SignalEvent.asset_id == asset.id, SignalEvent.occurred_at >= since)
+        .order_by(desc(SignalEvent.occurred_at))
+        .limit(80)
     ).all()
+    if not signals:
+        signals = session.scalars(
+            select(SignalEvent).where(SignalEvent.asset_id == asset.id).order_by(desc(SignalEvent.occurred_at)).limit(40)
+        ).all()
     interpretation = _latest_interpretation(session, asset.id)
+    onchain_series = _onchain_series(session, asset.id, since)
+    supply_series = _supply_series(session, asset.id, since)
+    related_news = _related_news(session, asset.symbol, since)
+    news_impacts = _news_impacts(asset.symbol, related_news, signals, since)
+    factor_impacts = _factor_impacts(ordered_snapshots, signals, onchain_series, supply_series, news_impacts)
     return {
         "asset": {"symbol": asset.symbol, "name": asset.name, "group": asset.group, "rank": asset.rank},
-        "snapshots": [snapshot_to_dict(item) for item in reversed(snapshots)],
+        "window": f"{days}d",
+        "snapshots": [snapshot_to_dict(item) for item in ordered_snapshots],
+        "market_snapshots": [snapshot_to_dict(item) for item in ordered_snapshots],
+        "price_candles": _price_candles(session, asset.id, since, ordered_snapshots),
+        "onchain_series": onchain_series,
+        "supply_series": supply_series,
+        "news_impacts": news_impacts,
+        "factor_impacts": factor_impacts,
+        "timeline_events": _timeline_events(signals, news_impacts),
         "signals": [signal_to_dict(item) for item in signals],
         "interpretation": interpretation_to_dict(interpretation),
     }
@@ -145,3 +176,350 @@ def interpretation_to_dict(item: AIInterpretation | None) -> dict | None:
         "model": item.model,
         "prompt_version": item.prompt_version,
     }
+
+
+def _window_days(window: str) -> int:
+    if window == "7d":
+        return 7
+    if window == "90d":
+        return 90
+    return 30
+
+
+def _price_candles(session: Session, asset_id: int, since: datetime, snapshots: list[MarketSnapshot]) -> list[dict]:
+    rows = session.scalars(
+        select(PriceCandle)
+        .where(PriceCandle.asset_id == asset_id, PriceCandle.timeframe == "1d", PriceCandle.opened_at >= since)
+        .order_by(asc(PriceCandle.opened_at))
+    ).all()
+    if rows:
+        candles = [
+            {
+                "opened_at": row.opened_at,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume_usd": row.volume_usd,
+                "source": row.source,
+            }
+            for row in rows
+        ]
+    else:
+        candles = _candles_from_market_snapshots(snapshots)
+    return [_candle_to_dict(row) for row in attach_moving_averages(candles)]
+
+
+def _candles_from_market_snapshots(snapshots: list[MarketSnapshot]) -> list[dict]:
+    candles = []
+    previous_close = None
+    for row in snapshots:
+        if row.price_usd is None:
+            continue
+        open_price = previous_close if previous_close is not None else row.price_usd
+        high = max(open_price, row.price_usd)
+        low = min(open_price, row.price_usd)
+        candles.append(
+            {
+                "opened_at": row.observed_at,
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": row.price_usd,
+                "volume_usd": row.volume_24h_usd,
+                "source": f"{row.source}_snapshot_proxy",
+            }
+        )
+        previous_close = row.price_usd
+    return candles
+
+
+def _onchain_series(session: Session, asset_id: int, since: datetime) -> list[dict]:
+    rows = session.scalars(
+        select(OnchainSnapshot)
+        .where(OnchainSnapshot.asset_id == asset_id, OnchainSnapshot.observed_at >= since)
+        .order_by(asc(OnchainSnapshot.observed_at))
+    ).all()
+    points = []
+    previous = None
+    for row in rows:
+        changes = [
+            _pct_change(row.active_addresses, previous.active_addresses if previous else None),
+            _pct_change(row.transaction_count, previous.transaction_count if previous else None),
+            _pct_change(row.fees_usd, previous.fees_usd if previous else None),
+            _pct_change(row.exchange_netflow_usd, previous.exchange_netflow_usd if previous else None),
+        ]
+        points.append(
+            {
+                "observed_at": row.observed_at.isoformat(),
+                "active_addresses": row.active_addresses,
+                "transaction_count": row.transaction_count,
+                "fees_usd": row.fees_usd,
+                "exchange_netflow_usd": row.exchange_netflow_usd,
+                "availability": row.availability,
+                "source": row.source,
+                "impact_score": max(score_abs_change(change, medium=15, high=35) for change in changes),
+            }
+        )
+        previous = row
+    return points
+
+
+def _supply_series(session: Session, asset_id: int, since: datetime) -> list[dict]:
+    rows = session.scalars(
+        select(SupplySnapshot)
+        .where(SupplySnapshot.asset_id == asset_id, SupplySnapshot.observed_at >= since)
+        .order_by(asc(SupplySnapshot.observed_at))
+    ).all()
+    points = []
+    previous: dict | None = None
+    for row in rows:
+        current = {
+            "circulating_supply": row.circulating_supply,
+            "total_supply": row.total_supply,
+            "burn_amount": row.burn_amount,
+            "mint_amount": row.mint_amount,
+        }
+        delta = calculate_supply_delta(current, previous)
+        points.append(
+            {
+                "observed_at": row.observed_at.isoformat(),
+                "circulating_supply": row.circulating_supply,
+                "total_supply": row.total_supply,
+                "burn_amount": row.burn_amount,
+                "mint_amount": row.mint_amount,
+                "net_change": delta["net_change"],
+                "net_change_pct": delta["net_change_pct"],
+                "method": delta["method"],
+                "availability": row.availability,
+                "source": row.source,
+                "impact_score": score_abs_change(delta["net_change_pct"], medium=0.5, high=1.5),
+            }
+        )
+        previous = current
+    return points
+
+
+def _related_news(session: Session, symbol: str, since: datetime) -> list[NewsItem]:
+    rows = session.scalars(select(NewsItem).order_by(desc(NewsItem.published_at)).limit(240)).all()
+    related = []
+    for item in rows:
+        observed_at = _as_utc(item.published_at or item.created_at)
+        if observed_at and observed_at < since:
+            continue
+        if symbol in (item.related_symbols or []):
+            related.append(item)
+    return related
+
+
+def _news_impacts(symbol: str, news_items: list[NewsItem], signals: list[SignalEvent], since: datetime) -> list[dict]:
+    buckets: dict[datetime, list[NewsItem]] = {}
+    for item in news_items:
+        observed_at = _as_utc(item.published_at or item.created_at)
+        if not observed_at:
+            continue
+        bucket = observed_at.replace(hour=0, minute=0, second=0, microsecond=0)
+        buckets.setdefault(bucket, []).append(item)
+
+    price_signals = [signal for signal in signals if signal.signal_type == "price_move"]
+    points = []
+    for observed_at, items in sorted(buckets.items()):
+        nearest_signal = _nearest_signal(observed_at, price_signals)
+        proximity_hours = None
+        severity = None
+        if nearest_signal:
+            proximity_hours = abs((_as_utc(nearest_signal.occurred_at) - observed_at).total_seconds()) / 3600
+            severity = nearest_signal.severity
+        source_count = len({item.source for item in items})
+        points.append(
+            {
+                "observed_at": observed_at.isoformat(),
+                "score": score_news_impact(len(items), severity, proximity_hours, source_count),
+                "item_count": len(items),
+                "source_count": source_count,
+                "summary": f"{symbol} 관련 뉴스 {len(items)}건이 가격 변동의 원인 후보로 묶였습니다.",
+                "items": [_news_item_to_dict(item) for item in items[:8]],
+            }
+        )
+    return points
+
+
+def _factor_impacts(
+    snapshots: list[MarketSnapshot],
+    signals: list[SignalEvent],
+    onchain_series: list[dict],
+    supply_series: list[dict],
+    news_impacts: list[dict],
+) -> list[dict]:
+    latest_snapshot = snapshots[-1] if snapshots else None
+    market_signals = [signal for signal in signals if signal.signal_type in ("price_move", "volume_change")]
+    market_score = max([_signal_score(signal.severity) for signal in market_signals] or [score_abs_change(latest_snapshot.price_change_24h_pct if latest_snapshot else None, 3, 6)])
+    latest_onchain = onchain_series[-1] if onchain_series else None
+    latest_supply = supply_series[-1] if supply_series else None
+    latest_news = news_impacts[-1] if news_impacts else None
+    return [
+        {
+            "factor": "market",
+            "label": "가격/거래량",
+            "score": market_score,
+            "direction": _direction(latest_snapshot.price_change_24h_pct if latest_snapshot else None),
+            "summary": _latest_signal_summary(market_signals) or "가격과 거래량 변화가 아직 뚜렷한 신호로 묶이지 않았습니다.",
+            "availability": "complete" if latest_snapshot else "unavailable",
+            "confidence": _score_confidence(market_score),
+        },
+        {
+            "factor": "onchain",
+            "label": "온체인",
+            "score": latest_onchain["impact_score"] if latest_onchain else 0,
+            "direction": "neutral",
+            "summary": "활성 주소, 거래 수, 수수료, 거래소 순유입 변화가 동반 신호 후보로 계산됩니다.",
+            "availability": latest_onchain["availability"] if latest_onchain else "unavailable",
+            "confidence": _score_confidence(latest_onchain["impact_score"] if latest_onchain else 0),
+        },
+        {
+            "factor": "supply",
+            "label": "순공급",
+            "score": latest_supply["impact_score"] if latest_supply else 0,
+            "direction": _direction(latest_supply["net_change"] if latest_supply else None),
+            "summary": _supply_summary(latest_supply),
+            "availability": latest_supply["availability"] if latest_supply else "unavailable",
+            "confidence": _score_confidence(latest_supply["impact_score"] if latest_supply else 0),
+        },
+        {
+            "factor": "news",
+            "label": "뉴스",
+            "score": latest_news["score"] if latest_news else 0,
+            "direction": "neutral",
+            "summary": latest_news["summary"] if latest_news else "최근 창에서 관련 뉴스 집중 신호가 낮습니다.",
+            "availability": "complete" if latest_news else "partial",
+            "confidence": _score_confidence(latest_news["score"] if latest_news else 0),
+        },
+    ]
+
+
+def _timeline_events(signals: list[SignalEvent], news_impacts: list[dict]) -> list[dict]:
+    events = [
+        {
+            "id": signal.id,
+            "occurred_at": signal.occurred_at.isoformat(),
+            "event_type": signal.signal_type,
+            "severity": signal.severity,
+            "title": signal.title,
+            "description": signal.description,
+            "score": _signal_score(signal.severity),
+            "source": signal.source,
+            "links": _evidence_links(signal.evidence),
+        }
+        for signal in signals
+    ]
+    events.extend(
+        {
+            "id": f"news-{item['observed_at']}",
+            "occurred_at": item["observed_at"],
+            "event_type": "news_candidate",
+            "severity": _score_confidence(item["score"]),
+            "title": f"뉴스 영향 후보 {item['score']}/100",
+            "description": item["summary"],
+            "score": item["score"],
+            "source": "news_items",
+            "links": [{"title": news["title"], "url": news["url"]} for news in item["items"] if news.get("url")],
+        }
+        for item in news_impacts
+    )
+    return sorted(events, key=lambda item: item["occurred_at"], reverse=True)[:80]
+
+
+def _candle_to_dict(row: dict) -> dict:
+    return {
+        "opened_at": row["opened_at"].isoformat(),
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "close": row.get("close"),
+        "volume_usd": row.get("volume_usd"),
+        "ma7": row.get("ma7"),
+        "ma20": row.get("ma20"),
+        "source": row.get("source"),
+    }
+
+
+def _news_item_to_dict(item: NewsItem) -> dict:
+    return {
+        "title": item.title,
+        "url": item.url,
+        "source": item.source,
+        "published_at": item.published_at.isoformat() if item.published_at else None,
+    }
+
+
+def _nearest_signal(observed_at: datetime, signals: list[SignalEvent]) -> SignalEvent | None:
+    if not signals:
+        return None
+    return min(signals, key=lambda signal: abs((_as_utc(signal.occurred_at) - observed_at).total_seconds()))
+
+
+def _pct_change(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous in (None, 0):
+        return None
+    return ((current - previous) / previous) * 100
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _signal_score(severity: str) -> int:
+    if severity == "high":
+        return 90
+    if severity == "medium":
+        return 60
+    return 30
+
+
+def _score_confidence(score: int | float) -> str:
+    if score >= 75:
+        return "high"
+    if score >= 40:
+        return "medium"
+    return "low"
+
+
+def _direction(value: float | None) -> str:
+    if value is None or value == 0:
+        return "neutral"
+    return "up" if value > 0 else "down"
+
+
+def _latest_signal_summary(signals: list[SignalEvent]) -> str | None:
+    if not signals:
+        return None
+    return signals[0].description
+
+
+def _supply_summary(latest_supply: dict | None) -> str:
+    if not latest_supply:
+        return "순공급 데이터가 아직 없습니다."
+    if latest_supply["method"] == "direct":
+        return "발행량과 소각량의 순변화가 직접 계산되었습니다."
+    if latest_supply["method"] == "circulating_proxy":
+        return "직접 발행/소각 데이터가 없어 유통 공급량 변화로 순공급 후보를 계산했습니다."
+    return "순공급 변화 계산에 필요한 데이터가 부족합니다."
+
+
+def _evidence_links(evidence: dict) -> list[dict]:
+    items = evidence.get("items")
+    if not isinstance(items, list):
+        return []
+    links = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title")
+        url = item.get("url")
+        if isinstance(title, str) and isinstance(url, str):
+            links.append({"title": title, "url": url})
+    return links

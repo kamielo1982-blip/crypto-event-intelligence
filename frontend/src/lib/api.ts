@@ -53,8 +53,9 @@ export function getMarketBrief(): Promise<MarketBrief> {
   return request<MarketBrief>("/market/brief");
 }
 
-export function getAssetOverview(symbol: string): Promise<AssetOverview> {
-  return request<AssetOverview>(`/assets/${encodeURIComponent(symbol)}/overview`);
+export function getAssetOverview(symbol: string, window = "30d"): Promise<AssetOverview> {
+  const params = new URLSearchParams({ window });
+  return request<AssetOverview>(`/assets/${encodeURIComponent(symbol)}/overview?${params.toString()}`);
 }
 
 export function getEvents(filters: { symbol?: string; signal_type?: string; severity?: string }): Promise<SignalEvent[]> {

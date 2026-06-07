@@ -32,6 +32,16 @@ class APIAuthSmokeTests(unittest.TestCase):
                 self.assertEqual(assets.status_code, 200)
                 self.assertGreaterEqual(len(assets.json()), 10)
 
+                overview = client.get("/api/assets/BTC/overview?window=30d")
+                self.assertEqual(overview.status_code, 200)
+                payload = overview.json()
+                self.assertIn("price_candles", payload)
+                self.assertIn("onchain_series", payload)
+                self.assertIn("supply_series", payload)
+                self.assertIn("news_impacts", payload)
+                self.assertIn("factor_impacts", payload)
+                self.assertIn("timeline_events", payload)
+
             from app.database import engine
 
             engine.dispose()

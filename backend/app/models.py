@@ -72,6 +72,28 @@ class MarketSnapshot(Base):
     __table_args__ = (Index("ix_market_asset_observed", "asset_id", "observed_at"),)
 
 
+class PriceCandle(Base):
+    __tablename__ = "price_candles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"), index=True)
+    collection_run_id: Mapped[int | None] = mapped_column(ForeignKey("collection_runs.id"), index=True)
+    timeframe: Mapped[str] = mapped_column(String(16), default="1d", index=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    open: Mapped[float | None] = mapped_column(Float)
+    high: Mapped[float | None] = mapped_column(Float)
+    low: Mapped[float | None] = mapped_column(Float)
+    close: Mapped[float | None] = mapped_column(Float)
+    volume_usd: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(64), default="unknown")
+    raw_payload: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (
+        UniqueConstraint("asset_id", "timeframe", "opened_at", name="uq_price_candle_asset_timeframe_opened"),
+        Index("ix_price_candle_asset_timeframe_opened", "asset_id", "timeframe", "opened_at"),
+    )
+
+
 class NewsItem(Base):
     __tablename__ = "news_items"
 
