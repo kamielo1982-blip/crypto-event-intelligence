@@ -1,10 +1,11 @@
 import { formatDateTime, formatNumber, formatPct } from "../../lib/format";
-import type { NewsImpactPoint, OnchainPoint, SupplyPoint } from "../../types";
+import type { KimchiPremiumPoint, NewsImpactPoint, OnchainPoint, SupplyPoint } from "../../types";
 
 type Props = {
   onchain: OnchainPoint[];
   supply: SupplyPoint[];
   news: NewsImpactPoint[];
+  kimchi?: KimchiPremiumPoint[];
 };
 
 type StripPoint = {
@@ -14,7 +15,7 @@ type StripPoint = {
   score?: number;
 };
 
-export function SignalStrips({ onchain, supply, news }: Props) {
+export function SignalStrips({ onchain, supply, news, kimchi = [] }: Props) {
   const onchainPoints = onchain.map((item) => ({
     time: item.observed_at,
     value: item.active_addresses,
@@ -33,12 +34,19 @@ export function SignalStrips({ onchain, supply, news }: Props) {
     label: `뉴스 ${item.item_count}건 · 출처 ${item.source_count}곳 · 후보 점수 ${item.score}`,
     score: item.score
   }));
+  const kimchiPoints = kimchi.map((item) => ({
+    time: item.observed_at,
+    value: item.premium_pct,
+    label: `${exchangeLabel(item.korean_exchange)} ${formatPct(item.premium_pct)} · ${item.korean_market}`,
+    score: item.score
+  }));
 
   return (
-    <div className="grid min-w-0 gap-3 lg:grid-cols-3">
+    <div className="grid min-w-0 gap-3 lg:grid-cols-4">
       <Strip title="On-chain Trend" subtitle="활성 주소, 거래 수, 수수료 변화" points={onchainPoints} tone="teal" emptyText="온체인 시계열 없음" />
       <Strip title="Net Supply" subtitle="직접값 우선, 없으면 유통 공급 proxy" points={supplyPoints} tone="amber" emptyText="순공급 시계열 없음" />
       <Strip title="News Impact" subtitle="뉴스 집중도와 가격 변동 근접도 점수" points={newsPoints} tone="blue" emptyText="뉴스 영향 후보 없음" />
+      <Strip title="Kimchi Premium" subtitle="KRW 거래소와 Binance 가격차" points={kimchiPoints} tone="rose" emptyText="김치프리미엄 시계열 없음" />
     </div>
   );
 }
@@ -53,12 +61,12 @@ function Strip({
   title: string;
   subtitle: string;
   points: StripPoint[];
-  tone: "teal" | "amber" | "blue";
+  tone: "teal" | "amber" | "blue" | "rose";
   emptyText: string;
 }) {
   const max = Math.max(...points.map((point) => Math.abs(point.value ?? 0)), 0);
   const latest = points[points.length - 1];
-  const color = tone === "teal" ? "bg-accent" : tone === "amber" ? "bg-warn" : "bg-blue-600";
+  const color = tone === "teal" ? "bg-accent" : tone === "amber" ? "bg-warn" : tone === "rose" ? "bg-rose-600" : "bg-blue-600";
 
   return (
     <div className="min-w-0 overflow-hidden rounded border border-line bg-white">
@@ -112,4 +120,10 @@ function methodLabel(method: string): string {
   if (method === "direct") return "직접 계산";
   if (method === "circulating_proxy") return "공급량 proxy";
   return "데이터 부족";
+}
+
+function exchangeLabel(exchange: string): string {
+  if (exchange === "upbit") return "Upbit";
+  if (exchange === "bithumb") return "Bithumb";
+  return exchange;
 }

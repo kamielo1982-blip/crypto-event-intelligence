@@ -6,6 +6,12 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import Session
 
+from app.collectors.binance import demo_klines as demo_binance_klines
+from app.collectors.binance import fetch_klines as fetch_binance_klines
+from app.collectors.binance import normalize_klines as normalize_binance_klines
+from app.collectors.bithumb import demo_candlesticks as demo_bithumb_candlesticks
+from app.collectors.bithumb import fetch_candlesticks as fetch_bithumb_candlesticks
+from app.collectors.bithumb import normalize_candlesticks as normalize_bithumb_candlesticks
 from app.collectors.coingecko import (
     demo_market_chart_payload,
     demo_market_payload,
@@ -16,11 +22,16 @@ from app.collectors.coingecko import (
 )
 from app.collectors.news_rss import demo_news_payload, fetch_rss_news
 from app.collectors.onchain_stub import demo_onchain_payload
+from app.collectors.upbit import demo_day_candles as demo_upbit_day_candles
+from app.collectors.upbit import fetch_day_candle_history as fetch_upbit_day_candle_history
+from app.collectors.upbit import normalize_day_candles as normalize_upbit_day_candles
 from app.config import Settings
 from app.models import (
     AIInterpretation,
     Asset,
     CollectionRun,
+    ExchangeCandle,
+    KimchiPremiumSnapshot,
     MarketSnapshot,
     NewsItem,
     OnchainSnapshot,
@@ -32,7 +43,7 @@ from app.models import (
 )
 from app.seed import seed_defaults
 from app.services.ai_interpreter import LocalHeuristicInterpreter
-from app.services.intelligence import normalize_market_chart_payload, normalize_ohlc_payload
+from app.services.intelligence import calculate_kimchi_premium, normalize_market_chart_payload, normalize_ohlc_payload
 from app.services.news import dedupe_news_items
 from app.services.signal_engine import build_market_signals, build_news_signals, build_onchain_signals, build_supply_signals
 
@@ -44,7 +55,7 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
     session.commit()
 
     assets = session.scalars(select(Asset).where(Asset.is_active.is_(True)).order_by(Asset.group, Asset.rank)).all()
-    summary = {"market": "pending", "news": "pending", "onchain": "pending"}
+    summary = {"market": "pending", "news": "pending", "onchain": "pending", "exchange_candles": "pending", "kimchi_premium": "pending"}
     try:
         market_payload, market_source, market_latency = _collect_market_data(assets, settings)
         _store_market_snapshots(session, run, assets, market_payload, market_source)
@@ -61,6 +72,19 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
     except Exception as exc:
         _record_source_health(session, "coingecko_price_candles", False, None, str(exc))
         summary["price_candles"] = "failed"
+
+    try:
+        exchange_counts, exchange_source, exchange_latency = _collect_exchange_candles(session, run, assets, settings)
+        _record_source_health(session, "binance_candles", True, exchange_latency, f"{exchange_counts.get('binance', 0)} candles")
+        _record_source_health(session, "upbit_candles", True, exchange_latency, f"{exchange_counts.get('upbit', 0)} candles")
+        _record_source_health(session, "bithumb_candles", True, exchange_latency, f"{exchange_counts.get('bithumb', 0)} candles")
+        _record_source_health(session, "kimchi_premium", True, exchange_latency, f"{exchange_counts.get('kimchi_premium', 0)} snapshots")
+        summary["exchange_candles"] = exchange_source
+        summary["kimchi_premium"] = "exchange_candles"
+    except Exception as exc:
+        _record_source_health(session, "exchange_candles", False, None, str(exc))
+        summary["exchange_candles"] = "failed"
+        summary["kimchi_premium"] = "failed"
 
     try:
         news_payload, news_source, news_latency = _collect_news_data(assets, settings)
@@ -117,7 +141,12 @@ def regenerate_interpretations_for_latest_run(session: Session) -> dict:
 def _collect_market_data(assets: list[Asset], settings: Settings) -> tuple[list[dict], str, float]:
     ids = [asset.coingecko_id for asset in assets if asset.coingecko_id]
     try:
-        payload, latency = fetch_coin_markets(ids)
+        payload, latency = fetch_coin_markets(
+            ids,
+            api_base_url=settings.coingecko_api_base_url,
+            api_key=settings.coingecko_api_key,
+            api_key_header=settings.coingecko_api_key_header,
+        )
         return payload, "coingecko", latency
     except Exception:
         if not settings.enable_demo_data:
@@ -149,18 +178,35 @@ def _collect_price_candles(session: Session, run: CollectionRun, assets: list[As
     started = time.perf_counter()
     created_or_updated = 0
     sources: set[str] = set()
+    history_days = _history_days(settings.coingecko_history_days)
     for asset in assets:
         if asset.group != "investable" or not asset.coingecko_id:
             continue
         try:
-            ohlc_payload, _ = fetch_coin_ohlc(asset.coingecko_id, days=90)
-            chart_payload, _ = fetch_coin_market_chart(asset.coingecko_id, days=90)
+            chart_payload, _ = fetch_coin_market_chart(
+                asset.coingecko_id,
+                days=history_days,
+                interval="daily",
+                api_base_url=settings.coingecko_api_base_url,
+                api_key=settings.coingecko_api_key,
+                api_key_header=settings.coingecko_api_key_header,
+            )
+            ohlc_payload = []
+            if isinstance(history_days, int) and history_days <= 90:
+                ohlc_payload, _ = fetch_coin_ohlc(
+                    asset.coingecko_id,
+                    days=history_days,
+                    api_base_url=settings.coingecko_api_base_url,
+                    api_key=settings.coingecko_api_key,
+                    api_key_header=settings.coingecko_api_key_header,
+                )
             source = "coingecko"
         except Exception:
             if not settings.enable_demo_data:
                 raise
-            ohlc_payload = demo_ohlc_payload(asset.coingecko_id, days=90)
-            chart_payload = demo_market_chart_payload(asset.coingecko_id, days=90)
+            demo_days = _demo_history_days(history_days)
+            ohlc_payload = demo_ohlc_payload(asset.coingecko_id, days=demo_days if demo_days <= 90 else 90)
+            chart_payload = demo_market_chart_payload(asset.coingecko_id, days=demo_days)
             source = "demo_fallback"
 
         volume_by_date = _volume_by_date(chart_payload)
@@ -176,6 +222,207 @@ def _collect_price_candles(session: Session, run: CollectionRun, assets: list[As
         sources.add(source)
     session.commit()
     return created_or_updated, "+".join(sorted(sources)) if sources else "none", (time.perf_counter() - started) * 1000
+
+
+def _collect_exchange_candles(session: Session, run: CollectionRun, assets: list[Asset], settings: Settings) -> tuple[dict[str, int], str, float]:
+    started = time.perf_counter()
+    history_days = _exchange_history_days(settings.exchange_candle_history_days)
+    counts = {"binance": 0, "upbit": 0, "bithumb": 0, "kimchi_premium": 0}
+    sources: set[str] = set()
+    for asset in assets:
+        if asset.group != "investable":
+            continue
+
+        binance_market = f"{asset.symbol}USDT"
+        binance_rows = _load_binance_candles(binance_market, history_days, settings)
+        counts["binance"] += _upsert_exchange_candles(session, run, asset, binance_rows)
+        sources.update({row.get("source", "binance") for row in binance_rows})
+
+        upbit_market = f"KRW-{asset.symbol}"
+        upbit_rows = _load_upbit_candles(upbit_market, history_days, settings)
+        counts["upbit"] += _upsert_exchange_candles(session, run, asset, upbit_rows)
+        sources.update({row.get("source", "upbit") for row in upbit_rows})
+
+        bithumb_market = f"{asset.symbol}_KRW"
+        bithumb_rows = _load_bithumb_candles(bithumb_market, history_days, settings)
+        counts["bithumb"] += _upsert_exchange_candles(session, run, asset, bithumb_rows)
+        sources.update({row.get("source", "bithumb") for row in bithumb_rows})
+
+        counts["kimchi_premium"] += _upsert_kimchi_history(session, run, asset, binance_rows, upbit_rows, settings.usd_krw_rate)
+        counts["kimchi_premium"] += _upsert_kimchi_history(session, run, asset, binance_rows, bithumb_rows, settings.usd_krw_rate)
+
+    session.commit()
+    return counts, "+".join(sorted(sources)) if sources else "none", (time.perf_counter() - started) * 1000
+
+
+def _load_binance_candles(market: str, history_days: int, settings: Settings) -> list[dict]:
+    try:
+        payload, _ = fetch_binance_klines(
+            market,
+            interval="1d",
+            limit=history_days,
+            api_base_url=settings.binance_api_base_url,
+        )
+        return normalize_binance_klines(payload, market, source="binance")
+    except Exception:
+        if not settings.enable_demo_data:
+            raise
+        return normalize_binance_klines(demo_binance_klines(market, history_days), market, source="demo_fallback")
+
+
+def _load_upbit_candles(market: str, history_days: int, settings: Settings) -> list[dict]:
+    try:
+        payload, _ = fetch_upbit_day_candle_history(
+            market,
+            days=history_days,
+            api_base_url=settings.upbit_api_base_url,
+        )
+        return normalize_upbit_day_candles(payload, market, source="upbit")
+    except Exception:
+        if not settings.enable_demo_data:
+            raise
+        payload = demo_upbit_day_candles(market, history_days, usd_krw=settings.usd_krw_rate)
+        return normalize_upbit_day_candles(payload, market, source="demo_fallback")
+
+
+def _load_bithumb_candles(market: str, history_days: int, settings: Settings) -> list[dict]:
+    order_currency, payment_currency = market.split("_", 1)
+    try:
+        payload, _ = fetch_bithumb_candlesticks(
+            order_currency,
+            payment_currency=payment_currency,
+            chart_interval="24h",
+            api_base_url=settings.bithumb_api_base_url,
+        )
+        return normalize_bithumb_candlesticks(payload, market, source="bithumb", limit=history_days)
+    except Exception:
+        if not settings.enable_demo_data:
+            raise
+        payload = demo_bithumb_candlesticks(market, history_days, usd_krw=settings.usd_krw_rate)
+        return normalize_bithumb_candlesticks(payload, market, source="demo_fallback", limit=history_days)
+
+
+def _upsert_exchange_candles(session: Session, run: CollectionRun, asset: Asset, candles: list[dict]) -> int:
+    count = 0
+    for candle in candles:
+        _upsert_exchange_candle(session, run, asset, candle)
+        count += 1
+    return count
+
+
+def _upsert_exchange_candle(session: Session, run: CollectionRun, asset: Asset, candle: dict) -> None:
+    existing = session.scalar(
+        select(ExchangeCandle).where(
+            ExchangeCandle.exchange == candle["exchange"],
+            ExchangeCandle.market == candle["market"],
+            ExchangeCandle.timeframe == candle.get("timeframe", "1d"),
+            ExchangeCandle.opened_at == candle["opened_at"],
+        )
+    )
+    if not existing:
+        session.add(
+            ExchangeCandle(
+                asset_id=asset.id,
+                collection_run_id=run.id,
+                exchange=candle["exchange"],
+                market=candle["market"],
+                quote_currency=candle["quote_currency"],
+                timeframe=candle.get("timeframe", "1d"),
+                opened_at=candle["opened_at"],
+                open=candle.get("open"),
+                high=candle.get("high"),
+                low=candle.get("low"),
+                close=candle.get("close"),
+                volume_base=candle.get("volume_base"),
+                volume_quote=candle.get("volume_quote"),
+                source=candle.get("source") or "unknown",
+                raw_payload=candle.get("raw_payload"),
+            )
+        )
+        return
+
+    existing.asset_id = asset.id
+    existing.collection_run_id = run.id
+    existing.quote_currency = candle["quote_currency"]
+    existing.open = candle.get("open")
+    existing.high = candle.get("high")
+    existing.low = candle.get("low")
+    existing.close = candle.get("close")
+    existing.volume_base = candle.get("volume_base")
+    existing.volume_quote = candle.get("volume_quote")
+    existing.source = candle.get("source") or existing.source
+    existing.raw_payload = candle.get("raw_payload")
+
+
+def _upsert_kimchi_history(
+    session: Session,
+    run: CollectionRun,
+    asset: Asset,
+    global_candles: list[dict],
+    korean_candles: list[dict],
+    usd_krw: float,
+) -> int:
+    global_by_date = {candle["opened_at"].date(): candle for candle in global_candles if candle.get("close") is not None}
+    count = 0
+    for korean in korean_candles:
+        global_candle = global_by_date.get(korean["opened_at"].date())
+        if not global_candle:
+            continue
+        premium = calculate_kimchi_premium(global_candle.get("close"), korean.get("close"), usd_krw)
+        observed_at = korean["opened_at"]
+        existing = session.scalar(
+            select(KimchiPremiumSnapshot).where(
+                KimchiPremiumSnapshot.asset_id == asset.id,
+                KimchiPremiumSnapshot.observed_at == observed_at,
+                KimchiPremiumSnapshot.korean_exchange == korean["exchange"],
+            )
+        )
+        payload = {
+            "global_exchange": global_candle["exchange"],
+            "global_market": global_candle["market"],
+            "korean_exchange": korean["exchange"],
+            "korean_market": korean["market"],
+            "global_price_usd": global_candle.get("close"),
+            "korean_price_krw": korean.get("close"),
+            "usd_krw": usd_krw,
+            "korean_price_usd": premium["korean_price_usd"],
+            "premium_pct": premium["premium_pct"],
+            "source": "exchange_candles",
+            "raw_payload": {
+                "global_source": global_candle.get("source"),
+                "korean_source": korean.get("source"),
+                "method": "korean_krw_close_div_usd_krw_vs_binance_usdt_close",
+            },
+        }
+        if existing:
+            existing.collection_run_id = run.id
+            for key, value in payload.items():
+                setattr(existing, key, value)
+        else:
+            session.add(KimchiPremiumSnapshot(asset_id=asset.id, collection_run_id=run.id, observed_at=observed_at, **payload))
+        count += 1
+    return count
+
+
+def _history_days(value: str) -> int | str:
+    normalized = value.strip().lower()
+    if normalized == "max":
+        return "max"
+    parsed = int(normalized)
+    return max(parsed, 1)
+
+
+def _demo_history_days(value: int | str) -> int:
+    if value == "max":
+        return 365
+    return int(value)
+
+
+def _exchange_history_days(value: str) -> int:
+    normalized = value.strip().lower()
+    if normalized == "max":
+        return 1000
+    return min(max(int(normalized), 1), 1000)
 
 
 def _store_market_snapshots(session: Session, run: CollectionRun, assets: list[Asset], payload: list[dict], source: str) -> None:

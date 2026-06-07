@@ -1,4 +1,4 @@
-import { Activity, BarChart3, CircleDollarSign, Newspaper } from "lucide-react";
+import { Activity, BarChart3, CircleDollarSign, Newspaper, Scale } from "lucide-react";
 import type { FactorImpact, MarketSnapshot } from "../../types";
 import { formatDateTime, formatPct, formatUsd, severityClass } from "../../lib/format";
 
@@ -11,7 +11,8 @@ const icons = {
   market: BarChart3,
   onchain: Activity,
   supply: CircleDollarSign,
-  news: Newspaper
+  news: Newspaper,
+  kimchi_premium: Scale
 };
 
 export function FactorImpactPanel({ factors, latest }: Props) {

@@ -107,10 +107,10 @@ export function TradingChart({ candles, events, mode, indicators, isLoading }: P
         priceLineVisible: false
       });
       const volumeData: HistogramData<UTCTimestamp>[] = candles
-        .filter((item) => item.volume_usd !== null)
+        .filter((item) => (item.volume_usd ?? item.volume_quote) !== null && (item.volume_usd ?? item.volume_quote) !== undefined)
         .map((item) => ({
           time: toChartTime(item.opened_at),
-          value: item.volume_usd as number,
+          value: (item.volume_usd ?? item.volume_quote) as number,
           color: (item.close ?? 0) >= (item.open ?? 0) ? "rgba(15, 123, 108, 0.35)" : "rgba(180, 35, 24, 0.28)"
         }))
         .sort((a, b) => a.time - b.time);

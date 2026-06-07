@@ -94,6 +94,57 @@ class PriceCandle(Base):
     )
 
 
+class ExchangeCandle(Base):
+    __tablename__ = "exchange_candles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"), index=True)
+    collection_run_id: Mapped[int | None] = mapped_column(ForeignKey("collection_runs.id"), index=True)
+    exchange: Mapped[str] = mapped_column(String(32), index=True)
+    market: Mapped[str] = mapped_column(String(40), index=True)
+    quote_currency: Mapped[str] = mapped_column(String(12), index=True)
+    timeframe: Mapped[str] = mapped_column(String(16), default="1d", index=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    open: Mapped[float | None] = mapped_column(Float)
+    high: Mapped[float | None] = mapped_column(Float)
+    low: Mapped[float | None] = mapped_column(Float)
+    close: Mapped[float | None] = mapped_column(Float)
+    volume_base: Mapped[float | None] = mapped_column(Float)
+    volume_quote: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(64), default="unknown")
+    raw_payload: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (
+        UniqueConstraint("exchange", "market", "timeframe", "opened_at", name="uq_exchange_candle_market_timeframe_opened"),
+        Index("ix_exchange_candle_asset_exchange_opened", "asset_id", "exchange", "opened_at"),
+    )
+
+
+class KimchiPremiumSnapshot(Base):
+    __tablename__ = "kimchi_premium_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"), index=True)
+    collection_run_id: Mapped[int | None] = mapped_column(ForeignKey("collection_runs.id"), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    global_exchange: Mapped[str] = mapped_column(String(32), default="binance", index=True)
+    global_market: Mapped[str] = mapped_column(String(40))
+    korean_exchange: Mapped[str] = mapped_column(String(32), index=True)
+    korean_market: Mapped[str] = mapped_column(String(40))
+    global_price_usd: Mapped[float | None] = mapped_column(Float)
+    korean_price_krw: Mapped[float | None] = mapped_column(Float)
+    usd_krw: Mapped[float | None] = mapped_column(Float)
+    korean_price_usd: Mapped[float | None] = mapped_column(Float)
+    premium_pct: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(64), default="exchange_candles")
+    raw_payload: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (
+        UniqueConstraint("asset_id", "observed_at", "korean_exchange", name="uq_kimchi_asset_observed_exchange"),
+        Index("ix_kimchi_asset_observed", "asset_id", "observed_at"),
+    )
+
+
 class NewsItem(Base):
     __tablename__ = "news_items"
 

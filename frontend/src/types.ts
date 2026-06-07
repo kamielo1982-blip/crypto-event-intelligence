@@ -24,10 +24,55 @@ export type PriceCandle = {
   high: number | null;
   low: number | null;
   close: number | null;
-  volume_usd: number | null;
+  volume_usd?: number | null;
+  volume_quote?: number | null;
+  volume_base?: number | null;
+  quote_currency?: string | null;
   ma7: number | null;
   ma20: number | null;
   source: string;
+};
+
+export type ExchangeCandle = PriceCandle & {
+  volume_base: number | null;
+  volume_quote: number | null;
+  quote_currency: string;
+  exchange: string;
+  market: string;
+};
+
+export type ExchangeCandleSeries = {
+  exchange: string;
+  market: string;
+  quote_currency: string;
+  timeframe: string;
+  candles: ExchangeCandle[];
+};
+
+export type KimchiPremiumPoint = {
+  observed_at: string;
+  global_exchange: string;
+  global_market: string;
+  korean_exchange: string;
+  korean_market: string;
+  global_price_usd: number | null;
+  korean_price_krw: number | null;
+  usd_krw: number | null;
+  korean_price_usd: number | null;
+  premium_pct: number | null;
+  score: number;
+  direction: "up" | "down" | "neutral" | string;
+  source: string;
+};
+
+export type KimchiPremiumLatest = {
+  observed_at: string;
+  average_premium_pct: number;
+  max_abs_premium_pct: number;
+  score: number;
+  direction: "up" | "down" | "neutral" | string;
+  summary: string;
+  exchanges: KimchiPremiumPoint[];
 };
 
 export type OnchainPoint = {
@@ -141,6 +186,9 @@ export type AssetOverview = {
   snapshots: MarketSnapshot[];
   market_snapshots: MarketSnapshot[];
   price_candles: PriceCandle[];
+  exchange_candles: ExchangeCandleSeries[];
+  kimchi_premium_series: KimchiPremiumPoint[];
+  kimchi_premium_latest: KimchiPremiumLatest | null;
   onchain_series: OnchainPoint[];
   supply_series: SupplyPoint[];
   news_impacts: NewsImpactPoint[];

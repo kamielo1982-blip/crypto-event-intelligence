@@ -24,7 +24,13 @@ BASE_PRICES = {
 }
 
 
-def fetch_coin_markets(coingecko_ids: list[str], timeout_seconds: int = 20) -> tuple[list[dict], float]:
+def fetch_coin_markets(
+    coingecko_ids: list[str],
+    timeout_seconds: int = 20,
+    api_base_url: str = "https://api.coingecko.com/api/v3",
+    api_key: str | None = None,
+    api_key_header: str = "x-cg-demo-api-key",
+) -> tuple[list[dict], float]:
     params = urlencode(
         {
             "vs_currency": "usd",
@@ -36,8 +42,8 @@ def fetch_coin_markets(coingecko_ids: list[str], timeout_seconds: int = 20) -> t
             "price_change_percentage": "24h",
         }
     )
-    url = f"https://api.coingecko.com/api/v3/coins/markets?{params}"
-    request = Request(url, headers={"accept": "application/json", "user-agent": "crypto-intel-mvp/0.1"})
+    url = f"{api_base_url.rstrip('/')}/coins/markets?{params}"
+    request = Request(url, headers=_headers(api_key, api_key_header))
     started = time.perf_counter()
     with urlopen(request, timeout=timeout_seconds) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -45,10 +51,17 @@ def fetch_coin_markets(coingecko_ids: list[str], timeout_seconds: int = 20) -> t
     return payload, latency_ms
 
 
-def fetch_coin_ohlc(coingecko_id: str, days: int = 90, timeout_seconds: int = 20) -> tuple[list[list[float]], float]:
+def fetch_coin_ohlc(
+    coingecko_id: str,
+    days: int | str = 90,
+    timeout_seconds: int = 20,
+    api_base_url: str = "https://api.coingecko.com/api/v3",
+    api_key: str | None = None,
+    api_key_header: str = "x-cg-demo-api-key",
+) -> tuple[list[list[float]], float]:
     params = urlencode({"vs_currency": "usd", "days": days})
-    url = f"https://api.coingecko.com/api/v3/coins/{coingecko_id}/ohlc?{params}"
-    request = Request(url, headers={"accept": "application/json", "user-agent": "crypto-intel-mvp/0.1"})
+    url = f"{api_base_url.rstrip('/')}/coins/{coingecko_id}/ohlc?{params}"
+    request = Request(url, headers=_headers(api_key, api_key_header))
     started = time.perf_counter()
     with urlopen(request, timeout=timeout_seconds) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -56,10 +69,20 @@ def fetch_coin_ohlc(coingecko_id: str, days: int = 90, timeout_seconds: int = 20
     return payload, latency_ms
 
 
-def fetch_coin_market_chart(coingecko_id: str, days: int = 90, timeout_seconds: int = 20) -> tuple[dict, float]:
-    params = urlencode({"vs_currency": "usd", "days": days})
-    url = f"https://api.coingecko.com/api/v3/coins/{coingecko_id}/market_chart?{params}"
-    request = Request(url, headers={"accept": "application/json", "user-agent": "crypto-intel-mvp/0.1"})
+def fetch_coin_market_chart(
+    coingecko_id: str,
+    days: int | str = 365,
+    timeout_seconds: int = 20,
+    interval: str | None = "daily",
+    api_base_url: str = "https://api.coingecko.com/api/v3",
+    api_key: str | None = None,
+    api_key_header: str = "x-cg-demo-api-key",
+) -> tuple[dict, float]:
+    params = {"vs_currency": "usd", "days": days}
+    if interval:
+        params["interval"] = interval
+    url = f"{api_base_url.rstrip('/')}/coins/{coingecko_id}/market_chart?{urlencode(params)}"
+    request = Request(url, headers=_headers(api_key, api_key_header))
     started = time.perf_counter()
     with urlopen(request, timeout=timeout_seconds) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -129,3 +152,10 @@ def demo_market_chart_payload(coingecko_id: str, days: int = 90) -> dict:
         prices.append([observed_at.timestamp() * 1000, price])
         volumes.append([observed_at.timestamp() * 1000, volume])
     return {"prices": prices, "total_volumes": volumes, "source_note": "deterministic demo fallback"}
+
+
+def _headers(api_key: str | None, api_key_header: str) -> dict[str, str]:
+    headers = {"accept": "application/json", "user-agent": "crypto-intel-mvp/0.1"}
+    if api_key:
+        headers[api_key_header] = api_key
+    return headers

@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False
     frontend_origin: str = "http://localhost:3000"
     enable_demo_data: bool = True
+    coingecko_api_base_url: str = "https://api.coingecko.com/api/v3"
+    coingecko_api_key: str | None = None
+    coingecko_api_key_header: str = "x-cg-demo-api-key"
+    coingecko_history_days: str = "365"
+    exchange_candle_history_days: str = "365"
+    binance_api_base_url: str = "https://data-api.binance.vision"
+    upbit_api_base_url: str = "https://api.upbit.com"
+    bithumb_api_base_url: str = "https://api.bithumb.com"
+    usd_krw_rate: float = 1350.0
     openai_api_key: str | None = None
     openai_model: str = "local-heuristic"
 

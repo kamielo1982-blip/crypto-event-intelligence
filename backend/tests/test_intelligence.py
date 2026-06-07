@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 
 from app.services.intelligence import (
     attach_moving_averages,
+    calculate_kimchi_premium,
     calculate_supply_delta,
     normalize_market_chart_payload,
     normalize_ohlc_payload,
+    score_kimchi_premium,
     score_news_impact,
 )
 
@@ -75,6 +77,13 @@ class IntelligenceTests(unittest.TestCase):
         score = score_news_impact(news_count=8, signal_severity="high", proximity_hours=1, source_count=4)
 
         self.assertEqual(score, 100)
+
+    def test_kimchi_premium_converts_krw_price_to_usd_gap(self) -> None:
+        result = calculate_kimchi_premium(global_price_usd=100, korean_price_krw=140_000, usd_krw=1350)
+
+        self.assertAlmostEqual(result["korean_price_usd"], 103.7037, places=4)
+        self.assertAlmostEqual(result["premium_pct"], 3.7037, places=4)
+        self.assertEqual(score_kimchi_premium(result["premium_pct"]), 46)
 
 
 if __name__ == "__main__":

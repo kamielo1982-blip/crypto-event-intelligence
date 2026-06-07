@@ -4,9 +4,11 @@ import { getAssetOverview } from "../lib/api";
 import { formatDateTime, formatNumber, formatPct, formatUsd, severityClass } from "../lib/format";
 import type { Asset, AssetOverview, Interpretation, TimelineEvent } from "../types";
 import { FactorImpactPanel } from "./intelligence/FactorImpactPanel";
+import { KimchiPremiumPanel } from "./intelligence/KimchiPremiumPanel";
 import { NewsEvidenceList } from "./intelligence/NewsEvidenceList";
 import { SignalStrips } from "./intelligence/SignalStrips";
 import { TradingChart } from "./intelligence/TradingChart";
+import type { PriceCandle } from "../types";
 
 type Props = {
   assets: Asset[];
@@ -14,15 +16,29 @@ type Props = {
   onSelectSymbol: (symbol: string) => void;
 };
 
-type WindowOption = "7d" | "30d" | "90d";
+type WindowOption = "7d" | "30d" | "90d" | "365d" | "max";
 type ChartMode = "candles" | "line";
+type ChartSourceOption = {
+  id: string;
+  label: string;
+  detail: string;
+  candles: PriceCandle[];
+};
 
-const windows: WindowOption[] = ["7d", "30d", "90d"];
+const windows: WindowOption[] = ["7d", "30d", "90d", "365d", "max"];
+const windowLabels: Record<WindowOption, string> = {
+  "7d": "7D",
+  "30d": "30D",
+  "90d": "90D",
+  "365d": "1Y",
+  max: "MAX"
+};
 
 export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Props) {
   const [overview, setOverview] = useState<AssetOverview | null>(null);
   const [window, setWindow] = useState<WindowOption>("30d");
   const [chartMode, setChartMode] = useState<ChartMode>("candles");
+  const [chartSourceId, setChartSourceId] = useState("binance");
   const [indicators, setIndicators] = useState({ ma7: true, ma20: true, volume: true, events: true });
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -58,6 +74,39 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
       top: events.filter((event) => event.score >= 60).slice(0, 3)
     };
   }, [overview]);
+
+  const chartSources = useMemo<ChartSourceOption[]>(() => {
+    if (!overview) return [];
+    const exchangeRank: Record<string, number> = { binance: 0, upbit: 1, bithumb: 2 };
+    const exchangeSources: ChartSourceOption[] = (overview.exchange_candles || [])
+      .filter((series) => series.candles.length > 0)
+      .sort((left, right) => (exchangeRank[left.exchange] ?? 99) - (exchangeRank[right.exchange] ?? 99))
+      .map((series) => ({
+        id: `${series.exchange}:${series.market}`,
+        label: `${exchangeLabel(series.exchange)} ${series.market}`,
+        detail: series.quote_currency,
+        candles: series.candles as PriceCandle[]
+      }));
+    if (overview.price_candles.length > 0) {
+      exchangeSources.push({
+        id: "coingecko",
+        label: "CoinGecko USD",
+        detail: "fallback",
+        candles: overview.price_candles
+      });
+    }
+    return exchangeSources;
+  }, [overview]);
+
+  useEffect(() => {
+    if (chartSources.length === 0) return;
+    if (!chartSources.some((source) => source.id === chartSourceId)) {
+      setChartSourceId(chartSources[0].id);
+    }
+  }, [chartSourceId, chartSources]);
+
+  const selectedChartSource = chartSources.find((source) => source.id === chartSourceId) || chartSources[0];
+  const selectedCandles = selectedChartSource?.candles || [];
 
   return (
     <section className="space-y-4">
@@ -107,6 +156,11 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
         <Metric label="Volume" value={formatUsd(latest?.volume_24h_usd)} />
         <Metric label="Latest Snapshot" value={formatDateTime(latest?.observed_at)} />
         <Metric label="Event Candidates" value={`${eventSummary.high} high / ${eventSummary.medium} medium`} />
+        <Metric
+          label="Kimchi Premium"
+          value={formatPct(overview?.kimchi_premium_latest?.average_premium_pct)}
+          tone={(overview?.kimchi_premium_latest?.average_premium_pct ?? 0) >= 0 ? "up" : "down"}
+        />
       </div>
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(360px,0.9fr)]">
@@ -116,10 +170,21 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
               <div>
                 <h3 className="text-sm font-semibold tracking-normal text-ink">{selectedSymbol} Price Action</h3>
                 <p className="text-xs text-muted">
-                  {overview?.price_candles.length || 0} candles · {overview?.timeline_events.length || 0} events · {overview?.window || window}
+                  {selectedCandles.length || 0} candles · {selectedChartSource?.label || "No source"} · {overview?.timeline_events.length || 0} events · {overview?.window || window}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <select
+                  className="h-8 rounded border border-line bg-white px-2 text-xs text-ink outline-none focus:border-ink"
+                  value={selectedChartSource?.id || ""}
+                  onChange={(event) => setChartSourceId(event.target.value)}
+                >
+                  {chartSources.map((source) => (
+                    <option key={source.id} value={source.id}>
+                      {source.label}
+                    </option>
+                  ))}
+                </select>
                 <button
                   className={`inline-flex h-8 items-center gap-1 rounded border px-2 text-xs ${
                     chartMode === "candles" ? "border-ink bg-ink text-white" : "border-line bg-white text-ink hover:bg-slate-50"
@@ -145,7 +210,7 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
               </div>
             </div>
             <TradingChart
-              candles={overview?.price_candles || []}
+              candles={selectedCandles}
               events={overview?.timeline_events || []}
               indicators={indicators}
               isLoading={isLoading}
@@ -153,12 +218,18 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
             />
           </div>
 
-          <SignalStrips onchain={overview?.onchain_series || []} supply={overview?.supply_series || []} news={overview?.news_impacts || []} />
+          <SignalStrips
+            onchain={overview?.onchain_series || []}
+            supply={overview?.supply_series || []}
+            news={overview?.news_impacts || []}
+            kimchi={overview?.kimchi_premium_series || []}
+          />
           <TimelinePanel events={overview?.timeline_events || []} isLoading={isLoading} />
         </div>
 
         <aside className="min-w-0 space-y-4">
           <FactorImpactPanel factors={overview?.factor_impacts || []} latest={latest} />
+          <KimchiPremiumPanel latest={overview?.kimchi_premium_latest || null} series={overview?.kimchi_premium_series || []} />
           <CauseCandidatePanel events={eventSummary.top} />
           <AIInterpretationPanel interpretation={overview?.interpretation || null} />
           <NewsEvidenceList impacts={overview?.news_impacts || []} />
@@ -177,7 +248,7 @@ function SegmentedControl({ options, value, onChange }: { options: string[]; val
           key={option}
           onClick={() => onChange(option)}
         >
-          {option.toUpperCase()}
+          {windowLabels[option as WindowOption] || option.toUpperCase()}
         </button>
       ))}
     </div>
@@ -300,4 +371,11 @@ function TimelinePanel({ events, isLoading }: { events: TimelineEvent[]; isLoadi
       </div>
     </div>
   );
+}
+
+function exchangeLabel(exchange: string): string {
+  if (exchange === "binance") return "Binance";
+  if (exchange === "upbit") return "Upbit";
+  if (exchange === "bithumb") return "Bithumb";
+  return exchange;
 }

@@ -5,8 +5,20 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session
 
-from app.models import AIInterpretation, Asset, MarketSnapshot, NewsItem, OnchainSnapshot, PriceCandle, SignalEvent, SourceHealth, SupplySnapshot
-from app.services.intelligence import attach_moving_averages, calculate_supply_delta, score_abs_change, score_news_impact
+from app.models import (
+    AIInterpretation,
+    Asset,
+    ExchangeCandle,
+    KimchiPremiumSnapshot,
+    MarketSnapshot,
+    NewsItem,
+    OnchainSnapshot,
+    PriceCandle,
+    SignalEvent,
+    SourceHealth,
+    SupplySnapshot,
+)
+from app.services.intelligence import attach_moving_averages, calculate_supply_delta, score_abs_change, score_kimchi_premium, score_news_impact
 
 
 def _latest_market(session: Session, asset_id: int) -> MarketSnapshot | None:
@@ -61,25 +73,25 @@ def asset_overview(session: Session, symbol: str, window: str = "30d") -> dict |
     asset = session.scalar(select(Asset).where(Asset.symbol == symbol.upper(), Asset.is_active.is_(True)))
     if not asset:
         return None
-    days = _window_days(window)
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    snapshots = session.scalars(
-        select(MarketSnapshot)
-        .where(MarketSnapshot.asset_id == asset.id, MarketSnapshot.observed_at >= since)
-        .order_by(desc(MarketSnapshot.observed_at))
-        .limit(240)
-    ).all()
+    window_label, since = _window_scope(window)
+    snapshots_query = select(MarketSnapshot).where(MarketSnapshot.asset_id == asset.id).order_by(desc(MarketSnapshot.observed_at)).limit(240)
+    if since is not None:
+        snapshots_query = snapshots_query.where(MarketSnapshot.observed_at >= since)
+    snapshots = session.scalars(snapshots_query).all()
     if not snapshots:
         snapshots = session.scalars(
             select(MarketSnapshot).where(MarketSnapshot.asset_id == asset.id).order_by(desc(MarketSnapshot.observed_at)).limit(80)
         ).all()
     ordered_snapshots = list(reversed(snapshots))
-    signals = session.scalars(
+    signals_query = (
         select(SignalEvent)
-        .where(SignalEvent.asset_id == asset.id, SignalEvent.occurred_at >= since)
+        .where(SignalEvent.asset_id == asset.id)
         .order_by(desc(SignalEvent.occurred_at))
         .limit(80)
-    ).all()
+    )
+    if since is not None:
+        signals_query = signals_query.where(SignalEvent.occurred_at >= since)
+    signals = session.scalars(signals_query).all()
     if not signals:
         signals = session.scalars(
             select(SignalEvent).where(SignalEvent.asset_id == asset.id).order_by(desc(SignalEvent.occurred_at)).limit(40)
@@ -89,13 +101,18 @@ def asset_overview(session: Session, symbol: str, window: str = "30d") -> dict |
     supply_series = _supply_series(session, asset.id, since)
     related_news = _related_news(session, asset.symbol, since)
     news_impacts = _news_impacts(asset.symbol, related_news, signals, since)
-    factor_impacts = _factor_impacts(ordered_snapshots, signals, onchain_series, supply_series, news_impacts)
+    kimchi_premium_series = _kimchi_premium_series(session, asset.id, since)
+    kimchi_premium_latest = _kimchi_premium_latest(kimchi_premium_series)
+    factor_impacts = _factor_impacts(ordered_snapshots, signals, onchain_series, supply_series, news_impacts, kimchi_premium_latest)
     return {
         "asset": {"symbol": asset.symbol, "name": asset.name, "group": asset.group, "rank": asset.rank},
-        "window": f"{days}d",
+        "window": window_label,
         "snapshots": [snapshot_to_dict(item) for item in ordered_snapshots],
         "market_snapshots": [snapshot_to_dict(item) for item in ordered_snapshots],
         "price_candles": _price_candles(session, asset.id, since, ordered_snapshots),
+        "exchange_candles": _exchange_candle_series(session, asset.id, since),
+        "kimchi_premium_series": kimchi_premium_series,
+        "kimchi_premium_latest": kimchi_premium_latest,
         "onchain_series": onchain_series,
         "supply_series": supply_series,
         "news_impacts": news_impacts,
@@ -178,20 +195,30 @@ def interpretation_to_dict(item: AIInterpretation | None) -> dict | None:
     }
 
 
-def _window_days(window: str) -> int:
-    if window == "7d":
-        return 7
-    if window == "90d":
-        return 90
-    return 30
+def _window_scope(window: str) -> tuple[str, datetime | None]:
+    normalized = window.lower()
+    if normalized == "max":
+        return "max", None
+    if normalized in ("365d", "1y"):
+        days = 365
+    elif normalized == "90d":
+        days = 90
+    elif normalized == "7d":
+        days = 7
+    else:
+        days = 30
+    return f"{days}d", datetime.now(timezone.utc) - timedelta(days=days)
 
 
-def _price_candles(session: Session, asset_id: int, since: datetime, snapshots: list[MarketSnapshot]) -> list[dict]:
-    rows = session.scalars(
+def _price_candles(session: Session, asset_id: int, since: datetime | None, snapshots: list[MarketSnapshot]) -> list[dict]:
+    query = (
         select(PriceCandle)
-        .where(PriceCandle.asset_id == asset_id, PriceCandle.timeframe == "1d", PriceCandle.opened_at >= since)
+        .where(PriceCandle.asset_id == asset_id, PriceCandle.timeframe == "1d")
         .order_by(asc(PriceCandle.opened_at))
-    ).all()
+    )
+    if since is not None:
+        query = query.where(PriceCandle.opened_at >= since)
+    rows = session.scalars(query).all()
     if rows:
         candles = [
             {
@@ -208,6 +235,79 @@ def _price_candles(session: Session, asset_id: int, since: datetime, snapshots: 
     else:
         candles = _candles_from_market_snapshots(snapshots)
     return [_candle_to_dict(row) for row in attach_moving_averages(candles)]
+
+
+def _exchange_candle_series(session: Session, asset_id: int, since: datetime | None) -> list[dict]:
+    query = (
+        select(ExchangeCandle)
+        .where(ExchangeCandle.asset_id == asset_id, ExchangeCandle.timeframe == "1d")
+        .order_by(asc(ExchangeCandle.opened_at))
+    )
+    if since is not None:
+        query = query.where(ExchangeCandle.opened_at >= since)
+    rows = session.scalars(query).all()
+    grouped: dict[tuple[str, str], list[ExchangeCandle]] = {}
+    for row in rows:
+        grouped.setdefault((row.exchange, row.market), []).append(row)
+
+    series = []
+    for (exchange, market), candles in sorted(grouped.items()):
+        quote_currency = candles[-1].quote_currency if candles else "UNKNOWN"
+        normalized = [
+            {
+                "opened_at": row.opened_at,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume_base": row.volume_base,
+                "volume_quote": row.volume_quote,
+                "quote_currency": row.quote_currency,
+                "exchange": row.exchange,
+                "market": row.market,
+                "source": row.source,
+            }
+            for row in candles
+        ]
+        series.append(
+            {
+                "exchange": exchange,
+                "market": market,
+                "quote_currency": quote_currency,
+                "timeframe": "1d",
+                "candles": [_exchange_candle_to_dict(row) for row in attach_moving_averages(normalized)],
+            }
+        )
+    return series
+
+
+def _kimchi_premium_series(session: Session, asset_id: int, since: datetime | None) -> list[dict]:
+    query = select(KimchiPremiumSnapshot).where(KimchiPremiumSnapshot.asset_id == asset_id).order_by(asc(KimchiPremiumSnapshot.observed_at))
+    if since is not None:
+        query = query.where(KimchiPremiumSnapshot.observed_at >= since)
+    rows = session.scalars(query).all()
+    return [_kimchi_snapshot_to_dict(row) for row in rows]
+
+
+def _kimchi_premium_latest(points: list[dict]) -> dict | None:
+    if not points:
+        return None
+    latest_at = max(point["observed_at"] for point in points)
+    latest_points = [point for point in points if point["observed_at"] == latest_at and point["premium_pct"] is not None]
+    if not latest_points:
+        return None
+    average = sum(point["premium_pct"] for point in latest_points) / len(latest_points)
+    max_abs = max(latest_points, key=lambda point: abs(point["premium_pct"]))
+    score = score_kimchi_premium(average)
+    return {
+        "observed_at": latest_at,
+        "average_premium_pct": average,
+        "max_abs_premium_pct": max_abs["premium_pct"],
+        "score": score,
+        "direction": _direction(average),
+        "summary": _kimchi_summary(average),
+        "exchanges": latest_points,
+    }
 
 
 def _candles_from_market_snapshots(snapshots: list[MarketSnapshot]) -> list[dict]:
@@ -234,12 +334,11 @@ def _candles_from_market_snapshots(snapshots: list[MarketSnapshot]) -> list[dict
     return candles
 
 
-def _onchain_series(session: Session, asset_id: int, since: datetime) -> list[dict]:
-    rows = session.scalars(
-        select(OnchainSnapshot)
-        .where(OnchainSnapshot.asset_id == asset_id, OnchainSnapshot.observed_at >= since)
-        .order_by(asc(OnchainSnapshot.observed_at))
-    ).all()
+def _onchain_series(session: Session, asset_id: int, since: datetime | None) -> list[dict]:
+    query = select(OnchainSnapshot).where(OnchainSnapshot.asset_id == asset_id).order_by(asc(OnchainSnapshot.observed_at))
+    if since is not None:
+        query = query.where(OnchainSnapshot.observed_at >= since)
+    rows = session.scalars(query).all()
     points = []
     previous = None
     for row in rows:
@@ -265,12 +364,11 @@ def _onchain_series(session: Session, asset_id: int, since: datetime) -> list[di
     return points
 
 
-def _supply_series(session: Session, asset_id: int, since: datetime) -> list[dict]:
-    rows = session.scalars(
-        select(SupplySnapshot)
-        .where(SupplySnapshot.asset_id == asset_id, SupplySnapshot.observed_at >= since)
-        .order_by(asc(SupplySnapshot.observed_at))
-    ).all()
+def _supply_series(session: Session, asset_id: int, since: datetime | None) -> list[dict]:
+    query = select(SupplySnapshot).where(SupplySnapshot.asset_id == asset_id).order_by(asc(SupplySnapshot.observed_at))
+    if since is not None:
+        query = query.where(SupplySnapshot.observed_at >= since)
+    rows = session.scalars(query).all()
     points = []
     previous: dict | None = None
     for row in rows:
@@ -300,19 +398,19 @@ def _supply_series(session: Session, asset_id: int, since: datetime) -> list[dic
     return points
 
 
-def _related_news(session: Session, symbol: str, since: datetime) -> list[NewsItem]:
+def _related_news(session: Session, symbol: str, since: datetime | None) -> list[NewsItem]:
     rows = session.scalars(select(NewsItem).order_by(desc(NewsItem.published_at)).limit(240)).all()
     related = []
     for item in rows:
         observed_at = _as_utc(item.published_at or item.created_at)
-        if observed_at and observed_at < since:
+        if since is not None and observed_at and observed_at < since:
             continue
         if symbol in (item.related_symbols or []):
             related.append(item)
     return related
 
 
-def _news_impacts(symbol: str, news_items: list[NewsItem], signals: list[SignalEvent], since: datetime) -> list[dict]:
+def _news_impacts(symbol: str, news_items: list[NewsItem], signals: list[SignalEvent], since: datetime | None) -> list[dict]:
     buckets: dict[datetime, list[NewsItem]] = {}
     for item in news_items:
         observed_at = _as_utc(item.published_at or item.created_at)
@@ -350,6 +448,7 @@ def _factor_impacts(
     onchain_series: list[dict],
     supply_series: list[dict],
     news_impacts: list[dict],
+    kimchi_premium_latest: dict | None,
 ) -> list[dict]:
     latest_snapshot = snapshots[-1] if snapshots else None
     market_signals = [signal for signal in signals if signal.signal_type in ("price_move", "volume_change")]
@@ -357,6 +456,7 @@ def _factor_impacts(
     latest_onchain = onchain_series[-1] if onchain_series else None
     latest_supply = supply_series[-1] if supply_series else None
     latest_news = news_impacts[-1] if news_impacts else None
+    kimchi_score = kimchi_premium_latest["score"] if kimchi_premium_latest else 0
     return [
         {
             "factor": "market",
@@ -393,6 +493,15 @@ def _factor_impacts(
             "summary": latest_news["summary"] if latest_news else "최근 창에서 관련 뉴스 집중 신호가 낮습니다.",
             "availability": "complete" if latest_news else "partial",
             "confidence": _score_confidence(latest_news["score"] if latest_news else 0),
+        },
+        {
+            "factor": "kimchi_premium",
+            "label": "김치프리미엄",
+            "score": kimchi_score,
+            "direction": kimchi_premium_latest["direction"] if kimchi_premium_latest else "neutral",
+            "summary": kimchi_premium_latest["summary"] if kimchi_premium_latest else "국내 KRW 거래소와 Binance USDT 기준 가격차 데이터가 아직 없습니다.",
+            "availability": "partial" if kimchi_premium_latest else "unavailable",
+            "confidence": _score_confidence(kimchi_score),
         },
     ]
 
@@ -440,6 +549,43 @@ def _candle_to_dict(row: dict) -> dict:
         "ma7": row.get("ma7"),
         "ma20": row.get("ma20"),
         "source": row.get("source"),
+    }
+
+
+def _exchange_candle_to_dict(row: dict) -> dict:
+    return {
+        "opened_at": row["opened_at"].isoformat(),
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "close": row.get("close"),
+        "volume_base": row.get("volume_base"),
+        "volume_quote": row.get("volume_quote"),
+        "quote_currency": row.get("quote_currency"),
+        "exchange": row.get("exchange"),
+        "market": row.get("market"),
+        "ma7": row.get("ma7"),
+        "ma20": row.get("ma20"),
+        "source": row.get("source"),
+    }
+
+
+def _kimchi_snapshot_to_dict(row: KimchiPremiumSnapshot) -> dict:
+    premium = row.premium_pct
+    return {
+        "observed_at": row.observed_at.isoformat(),
+        "global_exchange": row.global_exchange,
+        "global_market": row.global_market,
+        "korean_exchange": row.korean_exchange,
+        "korean_market": row.korean_market,
+        "global_price_usd": row.global_price_usd,
+        "korean_price_krw": row.korean_price_krw,
+        "usd_krw": row.usd_krw,
+        "korean_price_usd": row.korean_price_usd,
+        "premium_pct": premium,
+        "score": score_kimchi_premium(premium),
+        "direction": _direction(premium),
+        "source": row.source,
     }
 
 
@@ -508,6 +654,20 @@ def _supply_summary(latest_supply: dict | None) -> str:
     if latest_supply["method"] == "circulating_proxy":
         return "직접 발행/소각 데이터가 없어 유통 공급량 변화로 순공급 후보를 계산했습니다."
     return "순공급 변화 계산에 필요한 데이터가 부족합니다."
+
+
+def _kimchi_summary(premium_pct: float | None) -> str:
+    if premium_pct is None:
+        return "김치프리미엄 계산에 필요한 가격 또는 환율 데이터가 부족합니다."
+    if premium_pct >= 5:
+        return "국내 KRW 가격이 글로벌 기준보다 크게 높아 시장 과열/수요 집중의 동반 신호 후보입니다."
+    if premium_pct >= 1:
+        return "국내 KRW 가격이 글로벌 기준보다 높아 위험선호 또는 국내 수요 우위의 참고 신호입니다."
+    if premium_pct <= -5:
+        return "국내 KRW 가격이 글로벌 기준보다 크게 낮아 위험회피 또는 국내 매수세 약화의 동반 신호 후보입니다."
+    if premium_pct <= -1:
+        return "국내 KRW 가격이 글로벌 기준보다 낮아 국내 수요 약화 가능성을 참고할 수 있습니다."
+    return "국내와 글로벌 가격차가 크지 않아 김치프리미엄 신호는 중립에 가깝습니다."
 
 
 def _evidence_links(evidence: dict) -> list[dict]:

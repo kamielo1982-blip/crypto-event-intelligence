@@ -6,6 +6,14 @@ export function formatUsd(value: number | null | undefined): string {
   return `$${value.toPrecision(3)}`;
 }
 
+export function formatKrw(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "-";
+  if (Math.abs(value) >= 1_000_000_000_000) return `₩${(value / 1_000_000_000_000).toFixed(2)}T`;
+  if (Math.abs(value) >= 1_000_000_000) return `₩${(value / 1_000_000_000).toFixed(2)}B`;
+  if (Math.abs(value) >= 1_000_000) return `₩${(value / 1_000_000).toFixed(2)}M`;
+  return `₩${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+
 export function formatPct(value: number | null | undefined): string {
   if (value === null || value === undefined) return "-";
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;

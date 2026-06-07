@@ -126,6 +126,18 @@ def score_abs_change(value: float | None, medium: float, high: float) -> int:
     return min(100, round((absolute / high) * 100))
 
 
+def calculate_kimchi_premium(global_price_usd: float | None, korean_price_krw: float | None, usd_krw: float | None) -> dict:
+    if global_price_usd in (None, 0) or korean_price_krw is None or usd_krw in (None, 0):
+        return {"korean_price_usd": None, "premium_pct": None}
+    korean_price_usd = float(korean_price_krw) / float(usd_krw)
+    premium_pct = ((korean_price_usd - float(global_price_usd)) / float(global_price_usd)) * 100
+    return {"korean_price_usd": korean_price_usd, "premium_pct": premium_pct}
+
+
+def score_kimchi_premium(premium_pct: float | None) -> int:
+    return score_abs_change(premium_pct, medium=2.0, high=8.0)
+
+
 def _average_window(values: list[float | None], index: int, window: int) -> float | None:
     if index + 1 < window:
         return None
