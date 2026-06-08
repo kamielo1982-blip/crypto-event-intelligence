@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, Brain, Database, Play, RefreshCw } from "lucide-react";
-import { getSourceHealth, regenerateInterpretations, runCollection } from "../lib/api";
-import { formatDateTime } from "../lib/format";
+import { AlertCircle, Brain, Database, Newspaper, Play, RefreshCw, ShieldCheck } from "lucide-react";
+import { getSourceHealth, regenerateInterpretations, regenerateNewsAnalyses, runCollection } from "../lib/api";
+import { formatAge, formatDateTime, parseApiDate } from "../lib/format";
 import type { SourceHealth } from "../types";
 
 export function DataHealth() {
@@ -9,6 +9,7 @@ export function DataHealth() {
   const [isLoading, setIsLoading] = useState(true);
   const [isCollecting, setIsCollecting] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isRegeneratingNews, setIsRegeneratingNews] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,6 +59,21 @@ export function DataHealth() {
     }
   }
 
+  async function handleNewsRegenerate() {
+    setIsRegeneratingNews(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await regenerateNewsAnalyses();
+      setMessage(`news analysis: ${result.status}`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "뉴스 분석 재생성 실패");
+    } finally {
+      setIsRegeneratingNews(false);
+    }
+  }
+
   const summary = useMemo(() => {
     const ok = sources.filter((source) => source.status === "ok").length;
     const failed = sources.filter((source) => source.status === "failed").length;
@@ -67,6 +83,16 @@ export function DataHealth() {
       .sort();
     const latest = updatedTimes.length > 0 ? updatedTimes[updatedTimes.length - 1] : undefined;
     return { ok, failed, latest };
+  }, [sources]);
+
+  const reliability = useMemo(() => {
+    const researchOnly = sources.filter((source) => isResearchOnlySource(source));
+    const stale = sources.filter((source) => source.updated_at && sourceAgeSeconds(source.updated_at) > 6 * 60 * 60);
+    const failed = sources.filter((source) => source.status === "failed");
+    const investorGrade = sources.filter(
+      (source) => source.status === "ok" && !isResearchOnlySource(source) && !(source.updated_at && sourceAgeSeconds(source.updated_at) > 6 * 60 * 60)
+    );
+    return { investorGrade, researchOnly, stale, failed };
   }, [sources]);
 
   return (
@@ -104,6 +130,15 @@ export function DataHealth() {
             <Brain className="h-4 w-4" />
             AI 재생성
           </button>
+          <button
+            className="inline-flex h-9 items-center gap-2 rounded bg-accent px-3 text-sm text-white disabled:opacity-60"
+            onClick={handleNewsRegenerate}
+            disabled={isRegeneratingNews}
+            title="뉴스 분석 재생성"
+          >
+            <Newspaper className="h-4 w-4" />
+            뉴스 분석
+          </button>
         </div>
       </div>
 
@@ -120,6 +155,19 @@ export function DataHealth() {
         <Metric label="Failed Sources" value={summary.failed} />
         <Metric label="Tracked Sources" value={sources.length} />
         <Metric label="Latest Update" value={formatDateTime(summary.latest)} />
+      </div>
+
+      <div className="overflow-hidden rounded border border-line bg-white">
+        <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+          <ShieldCheck className="h-4 w-4 text-muted" />
+          <h3 className="text-sm font-semibold tracking-normal text-ink">Investor Reliability</h3>
+        </div>
+        <div className="grid gap-0 divide-y divide-line sm:grid-cols-4 sm:divide-y-0">
+          <ReliabilityMetric label="Investor-grade sources" value={reliability.investorGrade.length} tone="good" />
+          <ReliabilityMetric label="Research-only sources" value={reliability.researchOnly.length} tone="warn" />
+          <ReliabilityMetric label="Stale sources" value={reliability.stale.length} tone="warn" />
+          <ReliabilityMetric label="Failed sources" value={reliability.failed.length} tone="bad" />
+        </div>
       </div>
 
       <div className="overflow-hidden rounded border border-line bg-white">
@@ -164,15 +212,20 @@ export function DataHealth() {
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <span
-                        className={`rounded px-2 py-1 text-xs font-medium ring-1 ${
-                          source.status === "ok"
-                            ? "bg-emerald-50 text-accent ring-emerald-200"
-                            : "bg-red-50 text-danger ring-red-200"
-                        }`}
-                      >
-                        {source.status}
-                      </span>
+                      <div className="space-y-1">
+                        <span
+                          className={`rounded px-2 py-1 text-xs font-medium ring-1 ${
+                            source.status === "ok"
+                              ? "bg-emerald-50 text-accent ring-emerald-200"
+                              : "bg-red-50 text-danger ring-red-200"
+                          }`}
+                        >
+                          {source.status}
+                        </span>
+                        <span className={`block w-fit rounded px-2 py-1 text-xs font-medium ring-1 ${qualityClass(source)}`}>
+                          {qualityLabel(source)}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-4 py-3 tabular-nums">
                       {source.success_rate_24h === null ? "-" : `${Math.round(source.success_rate_24h * 100)}%`}
@@ -180,7 +233,10 @@ export function DataHealth() {
                     <td className="px-4 py-3 tabular-nums">{source.latency_ms === null ? "-" : `${Math.round(source.latency_ms)}ms`}</td>
                     <td className="px-4 py-3 text-muted">{formatDateTime(source.last_success_at)}</td>
                     <td className="px-4 py-3 text-muted">{formatDateTime(source.last_failure_at)}</td>
-                    <td className="max-w-[360px] px-4 py-3 text-muted">{source.message || "-"}</td>
+                    <td className="max-w-[360px] px-4 py-3 text-muted">
+                      {source.message || "-"}
+                      {source.updated_at && <div className="mt-1 text-xs">age {formatAge(sourceAgeSeconds(source.updated_at))}</div>}
+                    </td>
                   </tr>
                 ))}
             </tbody>
@@ -198,4 +254,35 @@ function Metric({ label, value }: { label: string; value: string | number }) {
       <p className="mt-1 text-xl font-semibold tracking-normal text-ink">{value}</p>
     </div>
   );
+}
+
+function ReliabilityMetric({ label, value, tone }: { label: string; value: number; tone: "good" | "warn" | "bad" }) {
+  const className = tone === "good" ? "text-accent" : tone === "warn" ? "text-warn" : "text-danger";
+  return (
+    <div className="px-4 py-3">
+      <p className="text-xs uppercase text-muted">{label}</p>
+      <p className={`mt-1 text-xl font-semibold tracking-normal ${className}`}>{value}</p>
+    </div>
+  );
+}
+
+function isResearchOnlySource(source: SourceHealth): boolean {
+  const haystack = `${source.source} ${source.message || ""}`.toLowerCase();
+  return haystack.includes("demo") || haystack.includes("partial") || haystack.includes("local_fallback") || source.source === "onchain_supply_demo";
+}
+
+function sourceAgeSeconds(value: string): number {
+  return Math.max(0, (Date.now() - parseApiDate(value).getTime()) / 1000);
+}
+
+function qualityLabel(source: SourceHealth): string {
+  if (source.status === "failed") return "Unavailable";
+  if (isResearchOnlySource(source)) return "Research-only";
+  return "Investor-grade";
+}
+
+function qualityClass(source: SourceHealth): string {
+  if (source.status === "failed") return "bg-slate-50 text-muted ring-slate-200";
+  if (isResearchOnlySource(source)) return "bg-amber-50 text-warn ring-amber-200";
+  return "bg-emerald-50 text-accent ring-emerald-200";
 }

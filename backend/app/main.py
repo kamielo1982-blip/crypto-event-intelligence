@@ -14,7 +14,7 @@ from app.database import SessionLocal, get_session, init_db
 from app.models import AdminUser, Asset
 from app.seed import seed_defaults
 from app.services import dashboard
-from app.workers.collector import regenerate_interpretations_for_latest_run, run_collection_once
+from app.workers.collector import regenerate_interpretations_for_latest_run, regenerate_news_analyses_for_recent_news, run_collection_once
 
 
 settings = get_settings()
@@ -102,6 +102,12 @@ def get_market_brief(session: Session = Depends(get_session), crypto_intel_sessi
     return dashboard.market_brief(session)
 
 
+@app.get("/api/market/regime")
+def get_market_regime(session: Session = Depends(get_session), crypto_intel_session: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
+    get_current_admin(crypto_intel_session, session)
+    return dashboard.market_regime(session)
+
+
 @app.get("/api/assets/{symbol}/overview")
 def get_asset_overview(
     symbol: str,
@@ -127,11 +133,12 @@ def get_events(
     symbol: str | None = None,
     signal_type: str | None = None,
     severity: str | None = None,
+    include_research: bool = False,
     session: Session = Depends(get_session),
     crypto_intel_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
 ):
     get_current_admin(crypto_intel_session, session)
-    return dashboard.event_feed(session, symbol=symbol, signal_type=signal_type, severity=severity)
+    return dashboard.event_feed(session, symbol=symbol, signal_type=signal_type, severity=severity, include_research=include_research)
 
 
 @app.get("/api/health/sources")
@@ -151,3 +158,9 @@ def create_collection_run(session: Session = Depends(get_session), crypto_intel_
 def regenerate_interpretations(session: Session = Depends(get_session), crypto_intel_session: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
     get_current_admin(crypto_intel_session, session)
     return regenerate_interpretations_for_latest_run(session)
+
+
+@app.post("/api/admin/news-analyses/regenerate")
+def regenerate_news_analyses(session: Session = Depends(get_session), crypto_intel_session: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
+    get_current_admin(crypto_intel_session, session)
+    return regenerate_news_analyses_for_recent_news(session, settings)

@@ -191,6 +191,29 @@ class LiveKimchiPremiumSnapshot(Base):
     )
 
 
+class MarketRegimeSnapshot(Base):
+    __tablename__ = "market_regime_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    collection_run_id: Mapped[int | None] = mapped_column(ForeignKey("collection_runs.id"), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    btc_dominance_pct: Mapped[float | None] = mapped_column(Float)
+    total_market_cap_usd: Mapped[float | None] = mapped_column(Float)
+    total_volume_usd: Mapped[float | None] = mapped_column(Float)
+    total_market_cap_change_24h_pct: Mapped[float | None] = mapped_column(Float)
+    fear_greed_value: Mapped[float | None] = mapped_column(Float)
+    fear_greed_label: Mapped[str | None] = mapped_column(String(64))
+    btc_funding_rate: Mapped[float | None] = mapped_column(Float)
+    btc_open_interest_usd: Mapped[float | None] = mapped_column(Float)
+    btc_open_interest_contracts: Mapped[float | None] = mapped_column(Float)
+    btc_long_short_ratio: Mapped[float | None] = mapped_column(Float)
+    availability: Mapped[str] = mapped_column(String(32), default="unavailable", index=True)
+    source: Mapped[str] = mapped_column(String(64), default="market_regime")
+    raw_payload: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (Index("ix_market_regime_observed", "observed_at"),)
+
+
 class KimchiPremiumSnapshot(Base):
     __tablename__ = "kimchi_premium_snapshots"
 
@@ -231,6 +254,27 @@ class NewsItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (UniqueConstraint("duplicate_key", "source", name="uq_news_duplicate_source"),)
+
+
+class NewsAnalysis(Base):
+    __tablename__ = "news_analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    news_item_id: Mapped[int] = mapped_column(ForeignKey("news_items.id"), index=True)
+    language: Mapped[str] = mapped_column(String(8), default="ko", index=True)
+    summary_ko: Mapped[str] = mapped_column(Text)
+    stance: Mapped[str] = mapped_column(String(32), index=True)
+    stance_label_ko: Mapped[str] = mapped_column(String(32))
+    stance_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    reason_ko: Mapped[str] = mapped_column(Text)
+    risk_notes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    model: Mapped[str] = mapped_column(String(80), default="local-fallback")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="news-ko-v1", index=True)
+    analysis_source: Mapped[str] = mapped_column(String(32), default="local_fallback", index=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    raw_output: Mapped[dict | None] = mapped_column(JSON)
+
+    __table_args__ = (UniqueConstraint("news_item_id", "language", "prompt_version", name="uq_news_analysis_item_language_prompt"),)
 
 
 class OnchainSnapshot(Base):

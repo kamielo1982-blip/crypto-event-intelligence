@@ -20,9 +20,11 @@ class Settings(BaseSettings):
     coingecko_history_days: str = "365"
     exchange_candle_history_days: str = "365"
     binance_api_base_url: str = "https://data-api.binance.vision"
+    binance_futures_api_base_url: str = "https://fapi.binance.com"
     upbit_api_base_url: str = "https://api.upbit.com"
     bithumb_api_base_url: str = "https://api.bithumb.com"
     fx_api_base_url: str = "https://open.er-api.com/v6/latest"
+    fear_greed_api_base_url: str = "https://api.alternative.me"
     live_data_stale_after_seconds: int = 900
     usd_krw_rate: float = 1350.0
     openai_api_key: str | None = None

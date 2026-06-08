@@ -1,4 +1,4 @@
-import type { Asset, AssetOverview, MarketBrief, SignalEvent, SourceHealth } from "../types";
+import type { Asset, AssetOverview, MarketBrief, MarketRegime, SignalEvent, SourceHealth } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
@@ -53,15 +53,19 @@ export function getMarketBrief(): Promise<MarketBrief> {
   return request<MarketBrief>("/market/brief");
 }
 
+export function getMarketRegime(): Promise<MarketRegime> {
+  return request<MarketRegime>("/market/regime");
+}
+
 export function getAssetOverview(symbol: string, window = "30d"): Promise<AssetOverview> {
   const params = new URLSearchParams({ window });
   return request<AssetOverview>(`/assets/${encodeURIComponent(symbol)}/overview?${params.toString()}`);
 }
 
-export function getEvents(filters: { symbol?: string; signal_type?: string; severity?: string }): Promise<SignalEvent[]> {
+export function getEvents(filters: { symbol?: string; signal_type?: string; severity?: string; include_research?: boolean }): Promise<SignalEvent[]> {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
-    if (value) params.set(key, value);
+    if (value !== undefined && value !== "" && value !== false) params.set(key, String(value));
   });
   const suffix = params.toString() ? `?${params.toString()}` : "";
   return request<SignalEvent[]>(`/events${suffix}`);
@@ -80,4 +84,8 @@ export function regenerateInterpretations(): Promise<{ id: number | null; status
     "/admin/interpretations/regenerate",
     { method: "POST" }
   );
+}
+
+export function regenerateNewsAnalyses(): Promise<{ status: string; message: string; summary: Record<string, unknown> }> {
+  return request<{ status: string; message: string; summary: Record<string, unknown> }>("/admin/news-analyses/regenerate", { method: "POST" });
 }

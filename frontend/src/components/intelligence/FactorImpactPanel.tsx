@@ -43,14 +43,22 @@ export function FactorImpactPanel({ factors, latest }: Props) {
                       <p className="mt-0.5 text-xs text-muted">{factor.availability}</p>
                     </div>
                   </div>
-                  <span className={`shrink-0 rounded px-2 py-1 text-xs font-medium ring-1 ${severityClass(factor.confidence)}`}>
-                    {factor.score}/100
-                  </span>
+                  <div className="shrink-0 space-y-1 text-right">
+                    <span className={`inline-flex rounded px-2 py-1 text-xs font-medium ring-1 ${severityClass(factor.confidence)}`}>
+                      {factor.score}/100
+                    </span>
+                    {factor.data_quality && (
+                      <span className={`block rounded px-2 py-1 text-xs font-medium ring-1 ${qualityClass(factor.data_quality)}`}>
+                        {qualityLabel(factor.data_quality)}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded bg-slate-100">
                   <div className={`h-full rounded ${barColor(factor.confidence)}`} style={{ width: `${Math.max(4, Math.min(100, factor.score))}%` }} />
                 </div>
                 <p className="mt-2 text-sm leading-5 text-muted">{factor.summary}</p>
+                {factor.quality_reason && <p className="mt-1 text-xs leading-4 text-muted">{factor.quality_reason}</p>}
               </div>
             );
           })}
@@ -73,4 +81,16 @@ function barColor(confidence: string): string {
   if (confidence === "high") return "bg-danger";
   if (confidence === "medium") return "bg-warn";
   return "bg-accent";
+}
+
+function qualityLabel(value: string): string {
+  if (value === "investor_grade") return "Investor-grade";
+  if (value === "research_only") return "Research-only";
+  return "Unavailable";
+}
+
+function qualityClass(value: string): string {
+  if (value === "investor_grade") return "bg-emerald-50 text-accent ring-emerald-200";
+  if (value === "research_only") return "bg-amber-50 text-warn ring-amber-200";
+  return "bg-slate-50 text-muted ring-slate-200";
 }

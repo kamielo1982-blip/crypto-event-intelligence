@@ -3,6 +3,7 @@ import { AlertCircle, ArrowDownRight, ArrowUpRight, RefreshCw } from "lucide-rea
 import { getMarketBrief, runCollection } from "../lib/api";
 import { formatDateTime, formatPct, formatUsd } from "../lib/format";
 import type { BriefRow, MarketBrief as MarketBriefType } from "../types";
+import { MarketRegimeBar } from "./MarketRegimeBar";
 
 type Props = {
   onSelectAsset: (symbol: string) => void;
@@ -79,6 +80,8 @@ export function MarketBrief({ onSelectAsset }: Props) {
           {error}
         </div>
       )}
+
+      <MarketRegimeBar regime={data?.market_regime} />
 
       <div className="grid metric-grid gap-3">
         <Metric label="Investable Assets" value={data?.investable.length ?? 0} />

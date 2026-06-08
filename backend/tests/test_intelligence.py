@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.services.intelligence import (
     attach_moving_averages,
+    build_factor_trend_series,
     calculate_kimchi_premium,
     calculate_live_kimchi_premium,
     calculate_supply_delta,
@@ -102,6 +103,53 @@ class IntelligenceTests(unittest.TestCase):
 
         self.assertIsNone(result["korean_price_usd"])
         self.assertIsNone(result["premium_pct"])
+
+    def test_factor_trend_distinguishes_zero_from_missing(self) -> None:
+        rows = [
+            {
+                "observed_at": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat(),
+                "net_change": 100,
+                "availability": "partial",
+                "source": "fixture",
+            },
+            {
+                "observed_at": datetime(2026, 1, 2, tzinfo=timezone.utc).isoformat(),
+                "net_change": 0,
+                "availability": "partial",
+                "source": "fixture",
+            },
+            {
+                "observed_at": datetime(2026, 1, 3, tzinfo=timezone.utc).isoformat(),
+                "net_change": None,
+                "availability": "partial",
+                "source": "fixture",
+            },
+        ]
+
+        series = build_factor_trend_series("supply", "net_change", "순공급 변화", "token", rows, "research_only")
+
+        self.assertEqual(series["data_quality"], "research_only")
+        self.assertEqual(series["points"][1]["value"], 0.0)
+        self.assertEqual(series["points"][1]["delta_pct"], -100)
+        self.assertIsNone(series["points"][2]["value"])
+        self.assertIsNone(series["points"][2]["delta_pct"])
+
+    def test_factor_trend_calculates_average_comparison_and_z_score(self) -> None:
+        rows = [
+            {
+                "observed_at": datetime(2026, 1, day, tzinfo=timezone.utc).isoformat(),
+                "active_addresses": float(day * 100),
+                "availability": "complete",
+                "source": "fixture",
+            }
+            for day in range(1, 9)
+        ]
+
+        series = build_factor_trend_series("onchain", "active_addresses", "활성 주소", "count", rows, "investor_grade")
+        latest = series["points"][-1]
+
+        self.assertAlmostEqual(latest["vs_7d_avg_pct"], 77.78, places=2)
+        self.assertIsNotNone(latest["z_score_30d"])
 
 
 if __name__ == "__main__":

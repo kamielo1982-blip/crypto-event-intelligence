@@ -24,6 +24,10 @@ class APIAuthSmokeTests(unittest.TestCase):
             with TestClient(app) as client:
                 blocked = client.get("/api/assets")
                 self.assertEqual(blocked.status_code, 401)
+                blocked_regime = client.get("/api/market/regime")
+                self.assertEqual(blocked_regime.status_code, 401)
+                blocked_news_regen = client.post("/api/admin/news-analyses/regenerate")
+                self.assertEqual(blocked_news_regen.status_code, 401)
 
                 login = client.post("/api/auth/login", json={"username": "admin", "password": "smoke-password"})
                 self.assertEqual(login.status_code, 200)
@@ -35,6 +39,7 @@ class APIAuthSmokeTests(unittest.TestCase):
                 overview = client.get("/api/assets/BTC/overview?window=30d")
                 self.assertEqual(overview.status_code, 200)
                 payload = overview.json()
+                self.assertIn("market_regime", payload)
                 self.assertIn("price_candles", payload)
                 self.assertIn("exchange_candles", payload)
                 self.assertIn("kimchi_premium_series", payload)
@@ -43,7 +48,12 @@ class APIAuthSmokeTests(unittest.TestCase):
                 self.assertIn("supply_series", payload)
                 self.assertIn("news_impacts", payload)
                 self.assertIn("factor_impacts", payload)
+                self.assertIn("factor_trends", payload)
                 self.assertIn("timeline_events", payload)
+
+                regime = client.get("/api/market/regime")
+                self.assertEqual(regime.status_code, 200)
+                self.assertIn("btc_dominance_pct", regime.json())
 
             from app.database import engine
 

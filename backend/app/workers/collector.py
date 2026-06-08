@@ -25,6 +25,18 @@ from app.collectors.coingecko import (
     fetch_coin_ohlc,
 )
 from app.collectors.fx import fetch_usd_rates, normalize_open_er_rate
+from app.collectors.market_regime import (
+    fetch_binance_long_short_ratio,
+    fetch_binance_open_interest,
+    fetch_binance_premium_index,
+    fetch_coingecko_global,
+    fetch_fear_greed,
+    normalize_binance_long_short_ratio,
+    normalize_binance_open_interest,
+    normalize_binance_premium_index,
+    normalize_coingecko_global,
+    normalize_fear_greed,
+)
 from app.collectors.news_rss import demo_news_payload, fetch_rss_news
 from app.collectors.onchain_stub import demo_onchain_payload
 from app.collectors.upbit import demo_day_candles as demo_upbit_day_candles
@@ -42,6 +54,7 @@ from app.models import (
     FxRateSnapshot,
     KimchiPremiumSnapshot,
     LiveKimchiPremiumSnapshot,
+    MarketRegimeSnapshot,
     MarketSnapshot,
     NewsItem,
     OnchainSnapshot,
@@ -53,8 +66,10 @@ from app.models import (
 )
 from app.seed import seed_defaults
 from app.services.ai_interpreter import LocalHeuristicInterpreter
+from app.services.data_quality import classify_signal_quality
 from app.services.intelligence import calculate_kimchi_premium, calculate_live_kimchi_premium, normalize_market_chart_payload, normalize_ohlc_payload
 from app.services.news import dedupe_news_items
+from app.services.news_intelligence import ensure_news_analyses, regenerate_recent_news_analyses
 from app.services.signal_engine import build_market_signals, build_news_signals, build_onchain_signals, build_supply_signals
 
 
@@ -74,6 +89,8 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
         "exchange_tickers": "pending",
         "fx_rate": "pending",
         "live_kimchi_premium": "pending",
+        "market_regime": "pending",
+        "news_analysis": "pending",
     }
     try:
         market_payload, market_source, market_latency = _collect_market_data(assets, settings)
@@ -128,6 +145,15 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
         summary["live_kimchi_premium"] = "failed"
 
     try:
+        regime, regime_source, regime_latency = _collect_market_regime(session, run, settings)
+        ok = regime.get("availability") in ("complete", "partial")
+        _record_source_health(session, "market_regime", ok, regime_latency, f"{regime.get('availability')} from {regime_source}")
+        summary["market_regime"] = regime.get("availability", "unavailable")
+    except Exception as exc:
+        _record_source_health(session, "market_regime", False, None, str(exc))
+        summary["market_regime"] = "failed"
+
+    try:
         news_payload, news_source, news_latency = _collect_news_data(assets, settings)
         _store_news(session, news_payload)
         _record_source_health(session, "rss_news", True, news_latency, f"{len(news_payload)} items")
@@ -135,6 +161,22 @@ def run_collection_once(session: Session, settings: Settings, trigger: str = "ma
     except Exception as exc:
         _record_source_health(session, "rss_news", False, None, str(exc))
         summary["news"] = "failed"
+
+    try:
+        news_analysis = ensure_news_analyses(session, settings)
+        ok = news_analysis["created"] > 0 or news_analysis["reused"] > 0
+        source_label = "+".join(news_analysis["analysis_sources"]) if news_analysis["analysis_sources"] else "unavailable"
+        _record_source_health(
+            session,
+            "news_analysis",
+            ok,
+            None,
+            f"created={news_analysis['created']}, reused={news_analysis['reused']}, source={source_label}",
+        )
+        summary["news_analysis"] = source_label
+    except Exception as exc:
+        _record_source_health(session, "news_analysis", False, None, str(exc))
+        summary["news_analysis"] = "failed"
 
     _store_onchain_and_supply(session, run, assets)
     summary["onchain"] = "demo_partial"
@@ -177,6 +219,24 @@ def regenerate_interpretations_for_latest_run(session: Session) -> dict:
     except Exception as exc:
         _record_source_health(session, "ai_interpretation", False, None, str(exc))
         return {"id": run.id, "status": "failed", "message": str(exc), "summary": run.raw_summary or {}}
+
+
+def regenerate_news_analyses_for_recent_news(session: Session, settings: Settings, limit: int = 120) -> dict:
+    try:
+        result = regenerate_recent_news_analyses(session, settings, limit=limit)
+        ok = result["created"] > 0 or result["deleted"] > 0
+        source_label = "+".join(result["analysis_sources"]) if result["analysis_sources"] else "unavailable"
+        _record_source_health(
+            session,
+            "news_analysis",
+            ok,
+            None,
+            f"regenerated created={result['created']}, deleted={result['deleted']}, source={source_label}",
+        )
+        return {"status": "success" if ok else "no_news", "message": "news analyses regenerated", "summary": result}
+    except Exception as exc:
+        _record_source_health(session, "news_analysis", False, None, str(exc))
+        return {"status": "failed", "message": str(exc), "summary": {}}
 
 
 def _collect_market_data(assets: list[Asset], settings: Settings) -> tuple[list[dict], str, float]:
@@ -343,6 +403,87 @@ def _collect_live_tickers_and_kimchi(session: Session, run: CollectionRun, asset
 
     session.commit()
     return counts, "+".join(sorted(sources)) if sources else "none", (time.perf_counter() - started) * 1000
+
+
+def _collect_market_regime(session: Session, run: CollectionRun, settings: Settings) -> tuple[dict, str, float]:
+    started = time.perf_counter()
+    sources: set[str] = set()
+    raw_payload: dict[str, object] = {}
+    normalized: dict[str, object] = {}
+
+    try:
+        payload, _ = fetch_coingecko_global(
+            api_base_url=settings.coingecko_api_base_url,
+            api_key=settings.coingecko_api_key,
+            api_key_header=settings.coingecko_api_key_header,
+        )
+        normalized.update(normalize_coingecko_global(payload))
+        raw_payload["coingecko_global"] = payload
+        sources.add("coingecko_global")
+    except Exception as exc:
+        raw_payload["coingecko_global_error"] = str(exc)
+
+    try:
+        payload, _ = fetch_fear_greed(api_base_url=settings.fear_greed_api_base_url)
+        fear_greed = normalize_fear_greed(payload)
+        normalized.update({key: value for key, value in fear_greed.items() if key != "raw_payload" and value is not None})
+        raw_payload["fear_greed"] = payload
+        sources.add("alternative_me_fng")
+    except Exception as exc:
+        raw_payload["fear_greed_error"] = str(exc)
+
+    mark_price = None
+    try:
+        payload, _ = fetch_binance_premium_index(api_base_url=settings.binance_futures_api_base_url)
+        premium = normalize_binance_premium_index(payload)
+        mark_price = premium.get("mark_price")
+        normalized.update({key: value for key, value in premium.items() if key not in ("raw_payload", "mark_price") and value is not None})
+        raw_payload["binance_premium_index"] = payload
+        sources.add("binance_futures")
+    except Exception as exc:
+        raw_payload["binance_premium_index_error"] = str(exc)
+
+    try:
+        payload, _ = fetch_binance_open_interest(api_base_url=settings.binance_futures_api_base_url)
+        open_interest = normalize_binance_open_interest(payload, mark_price=mark_price if isinstance(mark_price, float) else None)
+        normalized.update({key: value for key, value in open_interest.items() if key != "raw_payload" and value is not None})
+        raw_payload["binance_open_interest"] = payload
+        sources.add("binance_futures")
+    except Exception as exc:
+        raw_payload["binance_open_interest_error"] = str(exc)
+
+    try:
+        payload, _ = fetch_binance_long_short_ratio(api_base_url=settings.binance_futures_api_base_url)
+        long_short = normalize_binance_long_short_ratio(payload)
+        normalized.update({key: value for key, value in long_short.items() if key != "raw_payload" and value is not None})
+        raw_payload["binance_long_short_ratio"] = payload
+        sources.add("binance_futures")
+    except Exception as exc:
+        raw_payload["binance_long_short_ratio_error"] = str(exc)
+
+    availability = _market_regime_availability(normalized)
+    observed_candidates = [value for key, value in normalized.items() if key == "observed_at" and isinstance(value, datetime)]
+    observed_at = observed_candidates[0] if observed_candidates else utcnow()
+    snapshot = MarketRegimeSnapshot(
+        collection_run_id=run.id,
+        observed_at=observed_at,
+        btc_dominance_pct=normalized.get("btc_dominance_pct"),
+        total_market_cap_usd=normalized.get("total_market_cap_usd"),
+        total_volume_usd=normalized.get("total_volume_usd"),
+        total_market_cap_change_24h_pct=normalized.get("total_market_cap_change_24h_pct"),
+        fear_greed_value=normalized.get("fear_greed_value"),
+        fear_greed_label=normalized.get("fear_greed_label"),
+        btc_funding_rate=normalized.get("btc_funding_rate"),
+        btc_open_interest_usd=normalized.get("btc_open_interest_usd"),
+        btc_open_interest_contracts=normalized.get("btc_open_interest_contracts"),
+        btc_long_short_ratio=normalized.get("btc_long_short_ratio"),
+        availability=availability,
+        source="+".join(sorted(sources)) if sources else "unavailable",
+        raw_payload=raw_payload,
+    )
+    session.add(snapshot)
+    session.commit()
+    return {"availability": availability}, snapshot.source, (time.perf_counter() - started) * 1000
 
 
 def _load_binance_candles(market: str, history_days: int, settings: Settings) -> list[dict]:
@@ -688,6 +829,23 @@ def _live_kimchi_availability(
     return "complete"
 
 
+def _market_regime_availability(row: dict) -> str:
+    core_fields = [
+        row.get("btc_dominance_pct"),
+        row.get("total_market_cap_usd"),
+        row.get("fear_greed_value"),
+        row.get("btc_funding_rate"),
+        row.get("btc_open_interest_usd"),
+        row.get("btc_long_short_ratio"),
+    ]
+    present = sum(value is not None for value in core_fields)
+    if present == len(core_fields):
+        return "complete"
+    if present > 0:
+        return "partial"
+    return "unavailable"
+
+
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -891,7 +1049,12 @@ def _generate_interpretations(session: Session, run: CollectionRun, assets: list
         signals = session.scalars(
             select(SignalEvent).where(SignalEvent.asset_id == asset.id, SignalEvent.collection_run_id == run.id).order_by(desc(SignalEvent.occurred_at))
         ).all()
-        signal_dicts = [_signal_dict(item) for item in signals]
+        investor_grade_signals = [
+            item
+            for item in signals
+            if classify_signal_quality(item.signal_type, item.source, item.evidence).get("is_investor_grade")
+        ]
+        signal_dicts = [_signal_dict(item) for item in investor_grade_signals]
         caveats = _data_quality_caveats(session, asset.id)
         result = interpreter.interpret(asset.symbol, signal_dicts, caveats)
         session.add(
@@ -904,7 +1067,7 @@ def _generate_interpretations(session: Session, run: CollectionRun, assets: list
                 candidates=result.candidates,
                 caveats=result.caveats,
                 confidence=result.confidence,
-                evidence_signal_ids=[item.id for item in signals],
+                evidence_signal_ids=[item.id for item in investor_grade_signals],
                 raw_output=result.raw_output,
             )
         )
@@ -965,6 +1128,7 @@ def _onchain_dict(row: OnchainSnapshot) -> dict:
         "fees_usd": row.fees_usd,
         "exchange_netflow_usd": row.exchange_netflow_usd,
         "availability": row.availability,
+        "source": row.source,
     }
 
 
@@ -973,6 +1137,7 @@ def _supply_dict(row: SupplySnapshot) -> dict:
         "circulating_supply": row.circulating_supply,
         "total_supply": row.total_supply,
         "availability": row.availability,
+        "source": row.source,
     }
 
 

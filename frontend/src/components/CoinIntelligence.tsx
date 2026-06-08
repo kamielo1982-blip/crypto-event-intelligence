@@ -3,11 +3,12 @@ import { AlertCircle, BarChart3, Check, LineChart, RefreshCw } from "lucide-reac
 import { getAssetOverview } from "../lib/api";
 import { formatDateTime, formatNumber, formatPct, formatUsd, severityClass } from "../lib/format";
 import type { Asset, AssetOverview, Interpretation, TimelineEvent } from "../types";
+import { FactorTrendPanel } from "./intelligence/FactorTrendPanel";
 import { FactorImpactPanel } from "./intelligence/FactorImpactPanel";
 import { KimchiPremiumPanel } from "./intelligence/KimchiPremiumPanel";
 import { NewsEvidenceList } from "./intelligence/NewsEvidenceList";
-import { SignalStrips } from "./intelligence/SignalStrips";
 import { TradingChart } from "./intelligence/TradingChart";
+import { MarketRegimeBar } from "./MarketRegimeBar";
 import type { PriceCandle } from "../types";
 
 type Props = {
@@ -150,6 +151,8 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
         </div>
       )}
 
+      <MarketRegimeBar regime={overview?.market_regime} compact />
+
       <div className="grid metric-grid gap-3">
         <Metric label="Price" value={formatUsd(latest?.price_usd)} />
         <Metric label="24h Change" value={formatPct(latest?.price_change_24h_pct)} tone={(latest?.price_change_24h_pct ?? 0) >= 0 ? "up" : "down"} />
@@ -217,24 +220,19 @@ export function CoinIntelligence({ assets, selectedSymbol, onSelectSymbol }: Pro
               mode={chartMode}
             />
           </div>
-
-          <SignalStrips
-            onchain={overview?.onchain_series || []}
-            supply={overview?.supply_series || []}
-            news={overview?.news_impacts || []}
-            kimchi={overview?.kimchi_premium_series || []}
-          />
-          <TimelinePanel events={overview?.timeline_events || []} isLoading={isLoading} />
         </div>
 
         <aside className="min-w-0 space-y-4">
+          <InsightSummaryPanel overview={overview} events={eventSummary.top} />
           <FactorImpactPanel factors={overview?.factor_impacts || []} latest={latest} />
           <KimchiPremiumPanel latest={overview?.kimchi_premium_latest || null} series={overview?.kimchi_premium_series || []} />
-          <CauseCandidatePanel events={eventSummary.top} />
           <AIInterpretationPanel interpretation={overview?.interpretation || null} />
-          <NewsEvidenceList impacts={overview?.news_impacts || []} />
         </aside>
       </div>
+
+      <FactorTrendPanel trends={overview?.factor_trends || []} />
+      <NewsEvidenceList impacts={overview?.news_impacts || []} />
+      <TimelinePanel events={overview?.timeline_events || []} isLoading={isLoading} />
     </section>
   );
 }
@@ -276,6 +274,93 @@ function Metric({ label, value, tone = "neutral" }: { label: string; value: stri
       </p>
     </div>
   );
+}
+
+function InsightSummaryPanel({ overview, events }: { overview: AssetOverview | null; events: TimelineEvent[] }) {
+  const candidates = buildInsightCandidates(overview, events);
+  return (
+    <div className="min-w-0 overflow-hidden rounded border border-line bg-white">
+      <div className="border-b border-line px-4 py-3">
+        <h3 className="text-sm font-semibold tracking-normal text-ink">원인 후보 요약</h3>
+        <p className="mt-0.5 text-xs text-muted">가격·뉴스·온체인·순공급·김프의 상위 동반 신호</p>
+      </div>
+      <div className="divide-y divide-line">
+        {candidates.length === 0 && <div className="p-4 text-sm text-muted">강한 원인 후보가 아직 없습니다.</div>}
+        {candidates.map((candidate) => (
+          <div className="px-4 py-3" key={candidate.title}>
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm font-semibold text-ink">{candidate.title}</p>
+              <span className={`shrink-0 rounded px-2 py-1 text-xs font-medium ring-1 ${severityClass(candidate.confidence)}`}>{candidate.score}/100</span>
+            </div>
+            <p className="mt-1 text-sm leading-5 text-muted">{candidate.description}</p>
+            <p className="mt-2 text-xs text-muted">{candidate.source}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function buildInsightCandidates(overview: AssetOverview | null, events: TimelineEvent[]) {
+  if (!overview) return [];
+  const items: Array<{ title: string; description: string; score: number; confidence: "low" | "medium" | "high"; source: string }> = [];
+  const latestNews = overview.news_impacts[overview.news_impacts.length - 1];
+  if (latestNews) {
+    const counts = latestNews.stance_counts;
+    const dominant = dominantNewsLabel(counts);
+    items.push({
+      title: `뉴스 ${dominant.label}`,
+      description: `${latestNews.item_count}건의 관련 뉴스가 묶였고, ${dominant.label} 후보가 ${dominant.count}건입니다.`,
+      score: latestNews.score,
+      confidence: latestNews.score >= 75 ? "high" : latestNews.score >= 40 ? "medium" : "low",
+      source: `출처 ${latestNews.source_count}곳 · ${formatDateTime(latestNews.observed_at)}`
+    });
+  }
+  const trendCandidates = (overview.factor_trends || [])
+    .map((trend) => ({ trend, latest: trend.points[trend.points.length - 1] }))
+    .filter((item) => item.latest && item.latest.z_score_30d !== null)
+    .sort((left, right) => Math.abs(right.latest.z_score_30d || 0) - Math.abs(left.latest.z_score_30d || 0))
+    .slice(0, 2);
+  trendCandidates.forEach(({ trend, latest }) => {
+    const absoluteZ = Math.abs(latest.z_score_30d || 0);
+    items.push({
+      title: `${trend.label} ${latest.direction === "down" ? "감소" : latest.direction === "up" ? "증가" : "중립"} 후보`,
+      description: `30D 평균 대비 ${formatPct(latest.vs_30d_avg_pct)}, z-score ${formatNumber(latest.z_score_30d)}입니다.`,
+      score: Math.min(100, Math.round(absoluteZ * 35)),
+      confidence: trend.data_quality === "investor_grade" && absoluteZ >= 2 ? "medium" : "low",
+      source: `${trend.factor} · ${trend.data_quality}`
+    });
+  });
+  const kimchi = overview.kimchi_premium_latest;
+  if (kimchi?.average_premium_pct !== null && kimchi?.average_premium_pct !== undefined) {
+    items.push({
+      title: `김치프리미엄 ${kimchi.average_premium_pct >= 0 ? "양수" : "음수"} 구간`,
+      description: `${formatPct(kimchi.average_premium_pct)}로 국내외 가격차가 가격 변동의 동반 신호 후보입니다.`,
+      score: kimchi.score,
+      confidence: kimchi.score >= 75 ? "high" : kimchi.score >= 40 ? "medium" : "low",
+      source: `${kimchi.freshness_status} · ${kimchi.fx_source || "-"}`
+    });
+  }
+  events.slice(0, 1).forEach((event) => {
+    items.push({
+      title: event.title,
+      description: event.description,
+      score: event.score,
+      confidence: event.severity,
+      source: `${event.event_type} · ${event.source}`
+    });
+  });
+  return items.sort((left, right) => right.score - left.score).slice(0, 3);
+}
+
+function dominantNewsLabel(counts: AssetOverview["news_impacts"][number]["stance_counts"]) {
+  const candidates = [
+    { key: "positive_candidate", label: "잠재 호재", count: counts?.positive_candidate || 0 },
+    { key: "negative_candidate", label: "잠재 악재", count: counts?.negative_candidate || 0 },
+    { key: "mixed", label: "혼재", count: counts?.mixed || 0 },
+    { key: "neutral", label: "중립", count: counts?.neutral || 0 }
+  ];
+  return candidates.sort((left, right) => right.count - left.count)[0] || { key: "unavailable", label: "판단 보류", count: 0 };
 }
 
 function CauseCandidatePanel({ events }: { events: TimelineEvent[] }) {

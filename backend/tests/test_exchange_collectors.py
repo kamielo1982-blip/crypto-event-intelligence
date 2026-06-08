@@ -6,6 +6,13 @@ from datetime import datetime, timezone
 from app.collectors.binance import normalize_klines, normalize_ticker_price
 from app.collectors.bithumb import normalize_candlesticks, normalize_ticker as normalize_bithumb_ticker
 from app.collectors.fx import normalize_open_er_rate
+from app.collectors.market_regime import (
+    normalize_binance_long_short_ratio,
+    normalize_binance_open_interest,
+    normalize_binance_premium_index,
+    normalize_coingecko_global,
+    normalize_fear_greed,
+)
 from app.collectors.upbit import normalize_day_candles, normalize_ticker as normalize_upbit_ticker
 
 
@@ -104,6 +111,30 @@ class ExchangeCollectorTests(unittest.TestCase):
         self.assertEqual(row["quote_currency"], "KRW")
         self.assertEqual(row["rate"], 1545.528364)
         self.assertEqual(row["source"], "open_er_api")
+
+    def test_market_regime_normalizers_map_public_payloads(self) -> None:
+        global_row = normalize_coingecko_global(
+            {
+                "data": {
+                    "market_cap_percentage": {"btc": 54.25},
+                    "total_market_cap": {"usd": 2_450_000_000_000},
+                    "total_volume": {"usd": 95_000_000_000},
+                    "market_cap_change_percentage_24h_usd": -1.2,
+                }
+            }
+        )
+        fear_row = normalize_fear_greed({"data": [{"value": "72", "value_classification": "Greed", "timestamp": "1780819200"}]})
+        premium_row = normalize_binance_premium_index({"lastFundingRate": "0.0001", "markPrice": "61290.5", "time": 1_780_819_200_000})
+        oi_row = normalize_binance_open_interest({"openInterest": "125000", "time": 1_780_819_200_000}, mark_price=premium_row["mark_price"])
+        long_short_row = normalize_binance_long_short_ratio([{"longShortRatio": "1.18", "timestamp": "1780819200000"}])
+
+        self.assertEqual(global_row["btc_dominance_pct"], 54.25)
+        self.assertEqual(global_row["total_market_cap_change_24h_pct"], -1.2)
+        self.assertEqual(fear_row["fear_greed_value"], 72.0)
+        self.assertEqual(fear_row["fear_greed_label"], "Greed")
+        self.assertEqual(premium_row["btc_funding_rate"], 0.0001)
+        self.assertAlmostEqual(oi_row["btc_open_interest_usd"], 7_661_312_500.0)
+        self.assertEqual(long_short_row["btc_long_short_ratio"], 1.18)
 
 
 if __name__ == "__main__":

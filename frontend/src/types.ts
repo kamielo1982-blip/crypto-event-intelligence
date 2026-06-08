@@ -1,4 +1,7 @@
 export type Severity = "low" | "medium" | "high";
+export type DataQuality = "investor_grade" | "research_only" | "unavailable";
+export type FreshnessStatus = "fresh" | "stale" | "outdated" | "unavailable";
+export type NewsStance = "positive_candidate" | "neutral" | "negative_candidate" | "mixed" | "unavailable";
 
 export type Asset = {
   symbol: string;
@@ -65,6 +68,9 @@ export type KimchiPremiumPoint = {
   usdt_basis_premium_pct: number | null;
   basis: string | null;
   data_age_seconds: number | null;
+  snapshot_age_seconds: number | null;
+  source_skew_seconds: number | null;
+  freshness_status: FreshnessStatus;
   availability: string;
   score: number;
   direction: "up" | "down" | "neutral" | string;
@@ -83,6 +89,9 @@ export type KimchiPremiumLatest = {
   usd_krw: number | null;
   usdt_krw_reference: number | null;
   data_age_seconds: number | null;
+  snapshot_age_seconds: number | null;
+  source_skew_seconds: number | null;
+  freshness_status: FreshnessStatus;
   availability: string;
   exchanges: KimchiPremiumPoint[];
 };
@@ -96,6 +105,8 @@ export type OnchainPoint = {
   availability: string;
   source: string;
   impact_score: number;
+  data_quality?: DataQuality;
+  quality_reason?: string;
 };
 
 export type SupplyPoint = {
@@ -110,6 +121,8 @@ export type SupplyPoint = {
   availability: string;
   source: string;
   impact_score: number;
+  data_quality?: DataQuality;
+  quality_reason?: string;
 };
 
 export type NewsEvidenceItem = {
@@ -117,6 +130,13 @@ export type NewsEvidenceItem = {
   url: string;
   source: string;
   published_at: string | null;
+  summary_ko: string | null;
+  stance: NewsStance;
+  stance_label_ko: string;
+  stance_confidence: number;
+  reason_ko: string;
+  risk_notes: string[];
+  analysis_source: string;
 };
 
 export type NewsImpactPoint = {
@@ -124,6 +144,7 @@ export type NewsImpactPoint = {
   score: number;
   item_count: number;
   source_count: number;
+  stance_counts: Record<NewsStance, number>;
   summary: string;
   items: NewsEvidenceItem[];
 };
@@ -136,6 +157,29 @@ export type FactorImpact = {
   summary: string;
   availability: string;
   confidence: Severity;
+  data_quality?: DataQuality;
+  quality_reason?: string;
+};
+
+export type FactorTrendPoint = {
+  observed_at: string;
+  value: number | null;
+  delta_pct: number | null;
+  vs_7d_avg_pct: number | null;
+  vs_30d_avg_pct: number | null;
+  z_score_30d: number | null;
+  direction: "up" | "down" | "neutral" | string;
+  availability: string;
+  source: string;
+};
+
+export type FactorTrendSeries = {
+  factor: "onchain" | "supply" | string;
+  metric: string;
+  label: string;
+  unit: "count" | "usd" | "token" | "pct" | string;
+  data_quality: DataQuality;
+  points: FactorTrendPoint[];
 };
 
 export type TimelineEvent = {
@@ -160,6 +204,9 @@ export type SignalEvent = {
   value: number | null;
   source: string;
   evidence: Record<string, unknown>;
+  data_quality: DataQuality;
+  quality_reason: string;
+  is_investor_grade: boolean;
   asset?: Pick<Asset, "symbol" | "name">;
 };
 
@@ -186,15 +233,35 @@ export type BriefRow = {
   interpretation: Interpretation | null;
 };
 
+export type MarketRegime = {
+  observed_at: string | null;
+  snapshot_age_seconds: number | null;
+  btc_dominance_pct: number | null;
+  total_market_cap_usd: number | null;
+  total_market_cap_change_24h_pct: number | null;
+  fear_greed_value: number | null;
+  fear_greed_label: string | null;
+  btc_funding_rate: number | null;
+  btc_open_interest_usd: number | null;
+  btc_long_short_ratio: number | null;
+  btc_kimchi_premium_pct: number | null;
+  btc_kimchi_freshness_status: FreshnessStatus;
+  freshness_status: FreshnessStatus;
+  availability: string;
+  sources: string[];
+};
+
 export type MarketBrief = {
   investable: BriefRow[];
   stablecoins: BriefRow[];
+  market_regime: MarketRegime;
   generated_at: string;
 };
 
 export type AssetOverview = {
   asset: Asset;
   window: string;
+  market_regime: MarketRegime;
   snapshots: MarketSnapshot[];
   market_snapshots: MarketSnapshot[];
   price_candles: PriceCandle[];
@@ -205,6 +272,7 @@ export type AssetOverview = {
   supply_series: SupplyPoint[];
   news_impacts: NewsImpactPoint[];
   factor_impacts: FactorImpact[];
+  factor_trends: FactorTrendSeries[];
   timeline_events: TimelineEvent[];
   signals: SignalEvent[];
   interpretation: Interpretation | null;

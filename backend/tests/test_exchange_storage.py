@@ -144,6 +144,7 @@ class ExchangeStorageTests(unittest.TestCase):
                     database_url="sqlite+pysqlite:///:memory:",
                     admin_password="storage-password",
                     session_secret="storage-secret-with-enough-length-32",
+                    live_data_stale_after_seconds=10**9,
                 ),
             )
             _upsert_live_kimchi_snapshot(
@@ -158,6 +159,7 @@ class ExchangeStorageTests(unittest.TestCase):
                     database_url="sqlite+pysqlite:///:memory:",
                     admin_password="storage-password",
                     session_secret="storage-secret-with-enough-length-32",
+                    live_data_stale_after_seconds=10**9,
                 ),
             )
             session.commit()
@@ -177,6 +179,9 @@ class ExchangeStorageTests(unittest.TestCase):
             self.assertEqual(latest["basis"], "usd_krw_live_fx")
             self.assertAlmostEqual(latest["average_premium_pct"], -1.83, places=2)
             self.assertEqual(latest["usd_krw"], 1545.528364)
+            self.assertIn("snapshot_age_seconds", latest)
+            self.assertIn("source_skew_seconds", latest)
+            self.assertIn("freshness_status", latest)
             self.assertEqual(len(latest["exchanges"]), 2)
 
 

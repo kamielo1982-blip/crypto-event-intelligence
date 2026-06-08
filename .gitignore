@@ -22,3 +22,4 @@ frontend/vite.config.d.ts
 .DS_Store
 coverage/
 *.log
+*.db

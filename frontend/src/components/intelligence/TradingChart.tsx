@@ -9,6 +9,7 @@ import {
   type SeriesMarker,
   type UTCTimestamp
 } from "lightweight-charts";
+import { parseApiDate } from "../../lib/format";
 import type { PriceCandle, TimelineEvent } from "../../types";
 
 type ChartMode = "candles" | "line";
@@ -181,5 +182,5 @@ function toMarkers(events: TimelineEvent[]): SeriesMarker<UTCTimestamp>[] {
 }
 
 function toChartTime(value: string): UTCTimestamp {
-  return Math.floor(new Date(value).getTime() / 1000) as UTCTimestamp;
+  return Math.floor(parseApiDate(value).getTime() / 1000) as UTCTimestamp;
 }

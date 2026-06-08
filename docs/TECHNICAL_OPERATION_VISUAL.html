@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crypto Event Intelligence - Technical Operation</title>
+    <style>
+      :root {
+        --bg: #f5f7fb;
+        --panel: #ffffff;
+        --ink: #111827;
+        --muted: #64748b;
+        --line: #dbe3ef;
+        --accent: #0f766e;
+        --blue: #2563eb;
+        --warn: #b45309;
+        --danger: #b91c1c;
+        --slate: #334155;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.55;
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 40px 20px 56px;
+      }
+
+      header {
+        display: grid;
+        gap: 18px;
+        padding: 28px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: clamp(28px, 5vw, 46px);
+        letter-spacing: 0;
+        line-height: 1.08;
+      }
+
+      h2 {
+        font-size: 22px;
+        margin-bottom: 14px;
+      }
+
+      h3 {
+        font-size: 15px;
+      }
+
+      .eyebrow {
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .lead {
+        max-width: 860px;
+        color: var(--muted);
+        font-size: 17px;
+      }
+
+      .section {
+        margin-top: 22px;
+        padding: 24px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .grid-4 {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .grid-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .grid-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .card {
+        min-width: 0;
+        padding: 16px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .card strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border: 1px solid var(--line);
+        color: var(--slate);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .badge.good {
+        border-color: #99f6e4;
+        color: var(--accent);
+        background: #f0fdfa;
+      }
+
+      .badge.warn {
+        border-color: #fde68a;
+        color: var(--warn);
+        background: #fffbeb;
+      }
+
+      .badge.bad {
+        border-color: #fecaca;
+        color: var(--danger);
+        background: #fef2f2;
+      }
+
+      .pipeline {
+        display: grid;
+        grid-template-columns: 1fr 38px 1fr 38px 1fr 38px 1fr;
+        gap: 10px;
+        align-items: stretch;
+      }
+
+      .node {
+        padding: 16px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .node h3 {
+        margin-bottom: 6px;
+      }
+
+      .arrow {
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        font-size: 28px;
+      }
+
+      .flow-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+        padding-left: 0;
+        list-style: none;
+      }
+
+      .flow-list li {
+        padding: 8px 10px;
+        border-left: 3px solid var(--accent);
+        background: #f8fafc;
+        color: var(--slate);
+        font-size: 13px;
+      }
+
+      .svg-wrap {
+        width: 100%;
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      svg {
+        display: block;
+        min-width: 900px;
+        width: 100%;
+        height: auto;
+      }
+
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      .table th,
+      .table td {
+        padding: 10px;
+        border: 1px solid var(--line);
+        vertical-align: top;
+        text-align: left;
+      }
+
+      .table th {
+        background: #f8fafc;
+        color: var(--slate);
+      }
+
+      .mono {
+        color: #0f172a;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+      }
+
+      @media (max-width: 860px) {
+        main {
+          padding: 24px 12px 40px;
+        }
+
+        header,
+        .section {
+          padding: 18px;
+        }
+
+        .grid-4,
+        .grid-3,
+        .grid-2 {
+          grid-template-columns: 1fr;
+        }
+
+        .pipeline {
+          grid-template-columns: 1fr;
+        }
+
+        .arrow {
+          transform: rotate(90deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Crypto Event Intelligence MVP</p>
+        <h1>시세, 뉴스, 김프, 온체인·공급 데이터를 하나의 원인 후보 화면으로 묶는 방식</h1>
+        <p class="lead">
+          이 시스템은 자동매매 도구가 아니라, 스윙 트레이더가 가격 변동 주변의 동반 신호를 빠르게 읽도록 돕는 비공개 웹 대시보드입니다.
+          핵심은 원천 데이터를 그대로 나열하지 않고, 수집, 정규화, 신뢰도 게이트, 후보 점수, 한국어 뉴스 해석을 거쳐 Coin Intelligence 화면에 연결하는 것입니다.
+        </p>
+        <div>
+          <span class="badge good">FastAPI API</span>
+          <span class="badge good">React/Vite UI</span>
+          <span class="badge warn">Research-only gates</span>
+          <span class="badge">PostgreSQL/SQLite compatible</span>
+        </div>
+      </header>
+
+      <section class="section">
+        <h2>1. 전체 아키텍처</h2>
+        <div class="pipeline" aria-label="system pipeline">
+          <div class="node">
+            <h3>외부 데이터 소스</h3>
+            <p class="muted">Binance, Upbit, Bithumb, CoinGecko, RSS 뉴스, FX, Fear & Greed, Binance Futures</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <h3>Collector/Worker</h3>
+            <p class="muted">하루 3~4회 수집. 실패 시 source health에 기록하고 demo/partial은 Research-only로 제한합니다.</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <h3>정규화 DB</h3>
+            <p class="muted">raw payload와 normalized snapshot을 분리 저장합니다.</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node">
+            <h3>Dashboard API/UI</h3>
+            <p class="muted">가격 차트, 원인 후보, Factor Trend, 한국어 뉴스 카드, 데이터 신뢰도를 표시합니다.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>2. 데이터 흐름</h2>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1100 520" role="img" aria-label="data flow diagram">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#64748b"></path>
+              </marker>
+              <style>
+                .box { fill: #fff; stroke: #dbe3ef; stroke-width: 1.5; }
+                .title { font: 700 15px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; fill: #111827; }
+                .text { font: 12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; fill: #64748b; }
+                .line { stroke: #64748b; stroke-width: 1.5; marker-end: url(#arrow); }
+                .accent { fill: #0f766e; }
+                .warn { fill: #b45309; }
+                .blue { fill: #2563eb; }
+              </style>
+            </defs>
+
+            <rect class="box" x="30" y="50" width="190" height="120" rx="6"></rect>
+            <text class="title" x="50" y="82">시장/거래소 데이터</text>
+            <text class="text" x="50" y="112">Binance candles/ticker</text>
+            <text class="text" x="50" y="136">Upbit/Bithumb KRW</text>
+            <text class="text" x="50" y="160">CoinGecko market chart</text>
+
+            <rect class="box" x="30" y="210" width="190" height="120" rx="6"></rect>
+            <text class="title" x="50" y="242">뉴스/시장 레짐</text>
+            <text class="text" x="50" y="272">RSS news feeds</text>
+            <text class="text" x="50" y="296">Fear & Greed</text>
+            <text class="text" x="50" y="320">Funding/OI/L/S</text>
+
+            <rect class="box" x="30" y="370" width="190" height="90" rx="6"></rect>
+            <text class="title" x="50" y="402">FX/김프 기준</text>
+            <text class="text" x="50" y="432">USD/KRW live FX</text>
+            <text class="text" x="50" y="456">USDT/KRW reference</text>
+
+            <rect class="box" x="300" y="170" width="210" height="170" rx="6"></rect>
+            <text class="title" x="320" y="202">Collector Worker</text>
+            <text class="text" x="320" y="232">fetch → normalize → upsert</text>
+            <text class="text" x="320" y="256">collection_runs 기록</text>
+            <text class="text" x="320" y="280">source_health 갱신</text>
+            <text class="text" x="320" y="304">news_analyses 캐시 생성</text>
+
+            <rect class="box" x="590" y="50" width="210" height="130" rx="6"></rect>
+            <text class="title" x="610" y="82">Snapshot Tables</text>
+            <text class="text" x="610" y="112">market_snapshots</text>
+            <text class="text" x="610" y="136">exchange_ticker_snapshots</text>
+            <text class="text" x="610" y="160">live_kimchi_premium</text>
+
+            <rect class="box" x="590" y="210" width="210" height="130" rx="6"></rect>
+            <text class="title" x="610" y="242">Signal/AI Tables</text>
+            <text class="text" x="610" y="272">signal_events</text>
+            <text class="text" x="610" y="296">ai_interpretations</text>
+            <text class="text" x="610" y="320">news_analyses</text>
+
+            <rect class="box" x="590" y="370" width="210" height="90" rx="6"></rect>
+            <text class="title" x="610" y="402">Quality Tables</text>
+            <text class="text" x="610" y="432">source_health</text>
+            <text class="text" x="610" y="456">market_regime_snapshots</text>
+
+            <rect class="box" x="870" y="120" width="200" height="230" rx="6"></rect>
+            <text class="title" x="890" y="152">FastAPI Dashboard API</text>
+            <text class="text" x="890" y="182">/api/market/brief</text>
+            <text class="text" x="890" y="206">/api/assets/BTC/overview</text>
+            <text class="text" x="890" y="230">/api/events</text>
+            <text class="text" x="890" y="254">/api/health/sources</text>
+            <text class="text" x="890" y="288">HTTP-only cookie auth</text>
+            <text class="text" x="890" y="312">AI 호출 없이 캐시 조회</text>
+
+            <line class="line" x1="220" y1="110" x2="300" y2="220"></line>
+            <line class="line" x1="220" y1="270" x2="300" y2="255"></line>
+            <line class="line" x1="220" y1="420" x2="300" y2="300"></line>
+            <line class="line" x1="510" y1="230" x2="590" y2="115"></line>
+            <line class="line" x1="510" y1="260" x2="590" y2="275"></line>
+            <line class="line" x1="510" y1="300" x2="590" y2="420"></line>
+            <line class="line" x1="800" y1="115" x2="870" y2="190"></line>
+            <line class="line" x1="800" y1="275" x2="870" y2="230"></line>
+            <line class="line" x1="800" y1="420" x2="870" y2="290"></line>
+
+            <circle class="accent" cx="405" cy="360" r="8"></circle>
+            <text class="text" x="420" y="365">Research-only gate</text>
+            <circle class="blue" cx="970" cy="382" r="8"></circle>
+            <text class="text" x="985" y="386">React UI</text>
+          </svg>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>3. 주요 화면이 만들어지는 방식</h2>
+        <div class="grid grid-3">
+          <div class="card">
+            <strong>Market Brief</strong>
+            <p class="muted">상위 코인의 가격, 거래량, 신호 수, 시장 레짐, BTC 김프를 빠르게 훑는 첫 화면입니다.</p>
+          </div>
+          <div class="card">
+            <strong>Coin Intelligence</strong>
+            <p class="muted">캔들 차트와 원인 후보 요약, Factor Trend, 한국어 뉴스 분석을 한 화면에서 연결합니다.</p>
+          </div>
+          <div class="card">
+            <strong>Data Health</strong>
+            <p class="muted">수집 성공률, stale/outdated 상태, Investor-grade와 Research-only 소스를 분리 표시합니다.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>4. 뉴스 인텔리전스 처리</h2>
+        <div class="grid grid-2">
+          <div class="card">
+            <strong>수집 시점에 분석</strong>
+            <ul class="flow-list">
+              <li>RSS에서 title, summary, source, published_at, related_symbols만 정제합니다.</li>
+              <li>raw HTML이나 사용자 명령형 텍스트는 AI 입력으로 보내지 않습니다.</li>
+              <li>OpenAI key가 있으면 한국어 요약과 후보 라벨을 생성합니다.</li>
+              <li>key가 없거나 실패하면 local_fallback 결과를 캐시합니다.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <strong>화면 표시</strong>
+            <ul class="flow-list">
+              <li>뉴스 카드는 한국어 요약을 먼저 보여줍니다.</li>
+              <li>라벨은 잠재적 호재, 중립, 잠재적 악재, 혼재로 제한합니다.</li>
+              <li>매수/매도 추천, 확정적 원인 표현, 수익률 예측은 금지합니다.</li>
+              <li>overview API는 AI를 새로 호출하지 않고 DB 캐시만 조회합니다.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>5. Factor Trend 계산</h2>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Factor</th>
+              <th>Metric</th>
+              <th>계산값</th>
+              <th>해석 방식</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>온체인</td>
+              <td>활성 주소, 거래 수, 수수료, 거래소 순유입</td>
+              <td class="mono">delta_pct, vs_7d_avg_pct, vs_30d_avg_pct, z_score_30d</td>
+              <td>최근값이 과거 평균 대비 특이한지 표시합니다. 부분/demo 데이터는 Research-only입니다.</td>
+            </tr>
+            <tr>
+              <td>순공급</td>
+              <td>net_change, net_change_pct</td>
+              <td class="mono">mint - burn 또는 circulating_proxy</td>
+              <td>직접 발행/소각 값이 없으면 유통 공급량 변화 proxy로 계산하고 방법을 명시합니다.</td>
+            </tr>
+            <tr>
+              <td>뉴스</td>
+              <td>뉴스 개수, 출처 수, 가격 이벤트 근접도, 후보 라벨 분포</td>
+              <td class="mono">score 0..100 + stance_counts</td>
+              <td>뉴스가 가격 변동 주변에 얼마나 몰렸는지 후보 점수로 표시합니다. 확정 원인이 아닙니다.</td>
+            </tr>
+            <tr>
+              <td>김프</td>
+              <td>Binance USDT 가격, KRW 거래소 가격, USD/KRW live FX</td>
+              <td class="mono">((KRW/USD_KRW) - global_usd) / global_usd</td>
+              <td>Snapshot age와 source skew를 분리 표시하고 오래된 데이터는 stale/outdated로 경고합니다.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="section">
+        <h2>6. 신뢰도 게이트</h2>
+        <div class="grid grid-3">
+          <div class="card">
+            <span class="badge good">Investor-grade</span>
+            <p class="muted" style="margin-top: 10px">가격, 거래소 ticker, live FX처럼 공식/공개 API에서 직접 수집된 데이터입니다.</p>
+          </div>
+          <div class="card">
+            <span class="badge warn">Research-only</span>
+            <p class="muted" style="margin-top: 10px">partial, demo_fallback, local_fallback 기반 데이터입니다. 점수와 confidence가 제한됩니다.</p>
+          </div>
+          <div class="card">
+            <span class="badge bad">Unavailable</span>
+            <p class="muted" style="margin-top: 10px">필수 소스가 없거나 실패한 상태입니다. 계산값 대신 경고를 우선 표시합니다.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>7. 핵심 API와 저장 테이블</h2>
+        <div class="grid grid-2">
+          <div class="card">
+            <strong>주요 API</strong>
+            <ul class="flow-list">
+              <li class="mono">GET /api/market/brief</li>
+              <li class="mono">GET /api/market/regime</li>
+              <li class="mono">GET /api/assets/{symbol}/overview?window=30d</li>
+              <li class="mono">GET /api/events?include_research=false</li>
+              <li class="mono">POST /api/admin/collection-runs</li>
+              <li class="mono">POST /api/admin/news-analyses/regenerate</li>
+            </ul>
+          </div>
+          <div class="card">
+            <strong>주요 테이블</strong>
+            <ul class="flow-list">
+              <li class="mono">assets, collection_runs, source_health</li>
+              <li class="mono">market_snapshots, price_candles, exchange_candles</li>
+              <li class="mono">exchange_ticker_snapshots, fx_rate_snapshots, live_kimchi_premium_snapshots</li>
+              <li class="mono">news_items, news_analyses, signal_events, ai_interpretations</li>
+              <li class="mono">onchain_snapshots, supply_snapshots, market_regime_snapshots</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>8. 운영 관점에서 중요한 점</h2>
+        <div class="grid grid-4">
+          <div class="card">
+            <strong>AI 비용 제어</strong>
+            <p class="muted">뉴스 분석은 수집/재생성 시점에만 실행하고 DB 캐시를 재사용합니다.</p>
+          </div>
+          <div class="card">
+            <strong>보안</strong>
+            <p class="muted">단일 관리자 로그인, HTTP-only cookie 세션, API key는 서버 환경변수에만 둡니다.</p>
+          </div>
+          <div class="card">
+            <strong>팩트 신뢰도</strong>
+            <p class="muted">stale/outdated, Research-only, source skew를 화면에 노출해 과신을 줄입니다.</p>
+          </div>
+          <div class="card">
+            <strong>투자 표현 제한</strong>
+            <p class="muted">원인 후보, 동반 신호, 관련 가능성으로만 표현하고 매수/매도 추천은 하지 않습니다.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from statistics import pstdev
 
 
 SEVERITY_WEIGHT = {"high": 25, "medium": 15, "low": 6}
@@ -152,6 +153,53 @@ def score_kimchi_premium(premium_pct: float | None) -> int:
     return score_abs_change(premium_pct, medium=2.0, high=8.0)
 
 
+def build_factor_trend_series(
+    factor: str,
+    metric: str,
+    label: str,
+    unit: str,
+    rows: list[dict],
+    data_quality: str = "unavailable",
+) -> dict:
+    ordered = sorted(rows, key=lambda item: _parse_time(item.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc))
+    return {
+        "factor": factor,
+        "metric": metric,
+        "label": label,
+        "unit": unit,
+        "data_quality": data_quality,
+        "points": _trend_points(ordered, metric),
+    }
+
+
+def _trend_points(rows: list[dict], metric: str) -> list[dict]:
+    points = []
+    previous_value = None
+    observed_rows = [(row, _parse_time(row.get("observed_at"))) for row in rows]
+    for row, observed_at in observed_rows:
+        value = _safe_float(row.get(metric))
+        avg_7d = _average_since(observed_rows, metric, observed_at, days=7)
+        avg_30d = _average_since(observed_rows, metric, observed_at, days=30)
+        std_30d = _std_since(observed_rows, metric, observed_at, days=30)
+        z_score = ((value - avg_30d) / std_30d) if value is not None and avg_30d is not None and std_30d not in (None, 0) else None
+        points.append(
+            {
+                "observed_at": row.get("observed_at"),
+                "value": value,
+                "delta_pct": _pct_delta(value, previous_value),
+                "vs_7d_avg_pct": _pct_delta(value, avg_7d),
+                "vs_30d_avg_pct": _pct_delta(value, avg_30d),
+                "z_score_30d": round(z_score, 4) if z_score is not None else None,
+                "direction": _trend_direction(value, previous_value),
+                "availability": row.get("availability") or "unavailable",
+                "source": row.get("source") or "unknown",
+            }
+        )
+        if value is not None:
+            previous_value = value
+    return points
+
+
 def _average_window(values: list[float | None], index: int, window: int) -> float | None:
     if index + 1 < window:
         return None
@@ -165,3 +213,55 @@ def _safe_float(value: float | int | None) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _parse_time(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        normalized = value if value.lower().endswith("z") or "+" in value[-6:] else f"{value}Z"
+        try:
+            return datetime.fromisoformat(normalized.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def _average_since(rows: list[tuple[dict, datetime | None]], metric: str, observed_at: datetime | None, days: int) -> float | None:
+    values = _values_since(rows, metric, observed_at, days)
+    return (sum(values) / len(values)) if values else None
+
+
+def _std_since(rows: list[tuple[dict, datetime | None]], metric: str, observed_at: datetime | None, days: int) -> float | None:
+    values = _values_since(rows, metric, observed_at, days)
+    if len(values) < 2:
+        return None
+    return pstdev(values)
+
+
+def _values_since(rows: list[tuple[dict, datetime | None]], metric: str, observed_at: datetime | None, days: int) -> list[float]:
+    if observed_at is None:
+        return []
+    start = observed_at - timedelta(days=days)
+    values = []
+    for row, row_time in rows:
+        if row_time is None or row_time < start or row_time > observed_at:
+            continue
+        value = _safe_float(row.get(metric))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _pct_delta(value: float | None, baseline: float | None) -> float | None:
+    if value is None or baseline in (None, 0):
+        return None
+    return ((value - baseline) / baseline) * 100
+
+
+def _trend_direction(value: float | None, previous: float | None) -> str:
+    if value is None or previous is None or value == previous:
+        return "neutral"
+    return "up" if value > previous else "down"

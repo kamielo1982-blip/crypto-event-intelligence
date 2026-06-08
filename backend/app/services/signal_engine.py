@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.services.data_quality import is_investor_grade_snapshot
+
 
 @dataclass(frozen=True)
 class SignalDraft:
@@ -94,7 +96,7 @@ def build_news_signals(symbol: str, related_news: list[dict], observed_at: datet
 
 
 def build_onchain_signals(symbol: str, current: dict, previous: dict | None) -> list[SignalDraft]:
-    if not previous or current.get("availability") == "unavailable":
+    if not previous or not is_investor_grade_snapshot(current.get("availability"), current.get("source")):
         return []
     signals: list[SignalDraft] = []
     for field, label in [("active_addresses", "활성 주소"), ("transaction_count", "거래 수")]:
@@ -118,7 +120,7 @@ def build_onchain_signals(symbol: str, current: dict, previous: dict | None) -> 
 
 
 def build_supply_signals(symbol: str, current: dict, previous: dict | None) -> list[SignalDraft]:
-    if not previous or current.get("availability") == "unavailable":
+    if not previous or not is_investor_grade_snapshot(current.get("availability"), current.get("source")):
         return []
     delta = pct_change(current.get("circulating_supply"), previous.get("circulating_supply"))
     severity = severity_from_abs_pct(delta, medium=0.5, high=1.5)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
-from app.services.signal_engine import build_market_signals, build_news_signals, build_supply_signals, pct_change
+from app.services.signal_engine import build_market_signals, build_news_signals, build_onchain_signals, build_supply_signals, pct_change
 
 
 class SignalEngineTests(unittest.TestCase):
@@ -31,16 +31,31 @@ class SignalEngineTests(unittest.TestCase):
         self.assertEqual(signals[0].signal_type, "news_cluster")
         self.assertEqual(signals[0].severity, "medium")
 
-    def test_supply_change_uses_inflation_threshold(self) -> None:
+    def test_supply_change_uses_inflation_threshold_for_complete_data(self) -> None:
         signals = build_supply_signals(
             "SOL",
-            {"circulating_supply": 101_000_000, "availability": "partial"},
-            {"circulating_supply": 100_000_000, "availability": "partial"},
+            {"circulating_supply": 101_000_000, "availability": "complete", "source": "fixture"},
+            {"circulating_supply": 100_000_000, "availability": "complete", "source": "fixture"},
         )
 
         self.assertEqual(len(signals), 1)
         self.assertEqual(signals[0].signal_type, "supply_change")
         self.assertEqual(signals[0].severity, "medium")
+
+    def test_partial_and_demo_onchain_supply_do_not_create_investor_events(self) -> None:
+        partial_onchain = build_onchain_signals(
+            "BTC",
+            {"active_addresses": 200, "transaction_count": 400, "availability": "partial", "source": "fixture"},
+            {"active_addresses": 100, "transaction_count": 200, "availability": "partial", "source": "fixture"},
+        )
+        demo_supply = build_supply_signals(
+            "BTC",
+            {"circulating_supply": 102, "availability": "complete", "source": "demo_fallback"},
+            {"circulating_supply": 100, "availability": "complete", "source": "demo_fallback"},
+        )
+
+        self.assertEqual(partial_onchain, [])
+        self.assertEqual(demo_supply, [])
 
 
 if __name__ == "__main__":

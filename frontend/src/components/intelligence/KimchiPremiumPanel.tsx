@@ -1,5 +1,5 @@
 import { AlertTriangle, Gauge } from "lucide-react";
-import { formatDateTime, formatKrw, formatNumber, formatPct, formatUsd, severityClass } from "../../lib/format";
+import { formatAge, formatDateTime, formatKrw, formatNumber, formatPct, formatUsd, severityClass } from "../../lib/format";
 import type { KimchiPremiumLatest, KimchiPremiumPoint } from "../../types";
 
 type Props = {
@@ -9,7 +9,12 @@ type Props = {
 
 export function KimchiPremiumPanel({ latest, series }: Props) {
   const recent = series.slice(-24);
-  const isWarning = latest?.availability === "stale" || latest?.availability === "unavailable";
+  const isWarning =
+    latest?.freshness_status === "stale" ||
+    latest?.freshness_status === "outdated" ||
+    latest?.freshness_status === "unavailable" ||
+    latest?.availability === "stale" ||
+    latest?.availability === "unavailable";
 
   return (
     <div className="min-w-0 overflow-hidden rounded border border-line bg-white">
@@ -28,7 +33,9 @@ export function KimchiPremiumPanel({ latest, series }: Props) {
               <p className={`text-2xl font-semibold tracking-normal ${Number(latest.average_premium_pct ?? 0) >= 0 ? "text-accent" : "text-danger"}`}>
                 {formatPct(latest.average_premium_pct)}
               </p>
-              <p className="mt-1 text-xs text-muted">{formatDateTime(latest.observed_at)} · {availabilityLabel(latest.availability)}</p>
+              <p className="mt-1 text-xs text-muted">
+                {formatDateTime(latest.observed_at)} · {availabilityLabel(latest.availability)} · {freshnessLabel(latest.freshness_status)}
+              </p>
             </div>
             <span className={`shrink-0 rounded px-2 py-1 text-xs font-medium ring-1 ${severityClass(latest.score >= 75 ? "high" : latest.score >= 40 ? "medium" : "low")}`}>
               {latest.score}/100
@@ -39,9 +46,13 @@ export function KimchiPremiumPanel({ latest, series }: Props) {
 
           {isWarning && (
             <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-warn">
-              {latest.availability === "stale"
-                ? `데이터 age가 ${formatAge(latest.data_age_seconds)}입니다. 최신 ticker/FX 재수집 후 해석하세요.`
-                : "필수 live ticker 또는 USD/KRW 환율이 없어 현재 김프를 계산하지 않았습니다."}
+              {latest.freshness_status === "outdated"
+                ? `Snapshot age가 ${formatAge(latest.snapshot_age_seconds)}라 outdated 상태입니다. 최신 수집 후 해석하세요.`
+                : latest.freshness_status === "stale"
+                  ? `Snapshot age가 ${formatAge(latest.snapshot_age_seconds)}라 stale 상태입니다. 최신 수집 후 해석하세요.`
+                  : latest.availability === "stale"
+                    ? `Source skew가 ${formatAge(latest.source_skew_seconds ?? latest.data_age_seconds)}입니다. ticker/FX 관측 시점 차이를 확인하세요.`
+                  : "필수 live ticker 또는 USD/KRW 환율이 없어 현재 김프를 계산하지 않았습니다."}
             </div>
           )}
 
@@ -50,7 +61,9 @@ export function KimchiPremiumPanel({ latest, series }: Props) {
             <Meta label="FX 출처" value={latest.fx_source || "-"} />
             <Meta label="USD/KRW" value={formatNumber(latest.usd_krw)} />
             <Meta label="USDT/KRW 참고" value={formatNumber(latest.usdt_krw_reference)} />
-            <Meta label="Data age" value={formatAge(latest.data_age_seconds)} />
+            <Meta label="Snapshot age" value={formatAge(latest.snapshot_age_seconds)} />
+            <Meta label="Source skew" value={formatAge(latest.source_skew_seconds ?? latest.data_age_seconds)} />
+            <Meta label="Freshness" value={freshnessLabel(latest.freshness_status)} />
             <Meta label="상태" value={availabilityLabel(latest.availability)} />
           </div>
 
@@ -58,7 +71,9 @@ export function KimchiPremiumPanel({ latest, series }: Props) {
             {latest.exchanges.map((point) => (
               <div className="rounded border border-line px-3 py-2" key={`${point.korean_exchange}-${point.observed_at}`}>
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-ink">{exchangeLabel(point.korean_exchange)} · {availabilityLabel(point.availability)}</p>
+                  <p className="text-sm font-semibold text-ink">
+                    {exchangeLabel(point.korean_exchange)} · {availabilityLabel(point.availability)} · {freshnessLabel(point.freshness_status)}
+                  </p>
                   <p className={`text-sm font-semibold ${Number(point.premium_pct ?? 0) >= 0 ? "text-accent" : "text-danger"}`}>
                     {formatPct(point.premium_pct)}
                   </p>
@@ -70,6 +85,8 @@ export function KimchiPremiumPanel({ latest, series }: Props) {
                   <p>환산 {formatUsd(point.korean_price_usd)}</p>
                   <p>USDT/KRW {formatNumber(point.usdt_krw_reference)}</p>
                   <p>USDT 기준 {formatPct(point.usdt_basis_premium_pct)}</p>
+                  <p>Snapshot age {formatAge(point.snapshot_age_seconds)}</p>
+                  <p>Source skew {formatAge(point.source_skew_seconds ?? point.data_age_seconds)}</p>
                 </div>
               </div>
             ))}
@@ -120,14 +137,14 @@ function availabilityLabel(value: string | null | undefined): string {
   return "unavailable";
 }
 
+function freshnessLabel(value: string | null | undefined): string {
+  if (value === "fresh") return "fresh";
+  if (value === "stale") return "stale";
+  if (value === "outdated") return "outdated";
+  return "unavailable";
+}
+
 function basisLabel(value: string | null | undefined): string {
   if (value === "usd_krw_live_fx") return "USD/KRW live FX";
   return value || "-";
-}
-
-function formatAge(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined) return "-";
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-  return `${(seconds / 3600).toFixed(1)}h`;
 }

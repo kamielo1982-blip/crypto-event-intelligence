@@ -26,12 +26,26 @@ export function formatNumber(value: number | null | undefined): string {
 
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "-";
-  return new Intl.DateTimeFormat("ko-KR", {
+  const formatted = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit"
-  }).format(new Date(value));
+  }).format(parseApiDate(value));
+  return `${formatted} KST`;
+}
+
+export function parseApiDate(value: string): Date {
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value);
+  return new Date(hasTimezone ? value : `${value}Z`);
+}
+
+export function formatAge(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "-";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
 }
 
 export function severityClass(severity: string): string {

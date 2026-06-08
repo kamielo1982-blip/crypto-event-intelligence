@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, ExternalLink, Filter, RefreshCw } from "lucide-react";
+import { AlertCircle, ExternalLink, Filter, RefreshCw, ShieldCheck } from "lucide-react";
 import { getEvents } from "../lib/api";
 import { formatDateTime, severityClass } from "../lib/format";
 import type { Asset, SignalEvent } from "../types";
@@ -15,6 +15,7 @@ export function EventFeed({ assets }: Props) {
   const [symbol, setSymbol] = useState("");
   const [signalType, setSignalType] = useState("");
   const [severity, setSeverity] = useState("");
+  const [includeResearch, setIncludeResearch] = useState(false);
   const [events, setEvents] = useState<SignalEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +24,7 @@ export function EventFeed({ assets }: Props) {
     setIsLoading(true);
     setError(null);
     try {
-      setEvents(await getEvents({ symbol, signal_type: signalType, severity }));
+      setEvents(await getEvents({ symbol, signal_type: signalType, severity, include_research: includeResearch }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "이벤트 로드 실패");
     } finally {
@@ -33,7 +34,7 @@ export function EventFeed({ assets }: Props) {
 
   useEffect(() => {
     load();
-  }, [symbol, signalType, severity]);
+  }, [symbol, signalType, severity, includeResearch]);
 
   const counts = useMemo(() => {
     return events.reduce(
@@ -97,6 +98,15 @@ export function EventFeed({ assets }: Props) {
               </option>
             ))}
           </select>
+          <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded border border-line bg-white px-3 text-sm text-ink hover:bg-slate-50">
+            <input
+              className="h-4 w-4 accent-slate-900"
+              type="checkbox"
+              checked={includeResearch}
+              onChange={(event) => setIncludeResearch(event.target.checked)}
+            />
+            Research-only 포함
+          </label>
           <div className="ml-auto flex gap-2 text-xs">
             <span className="rounded bg-red-50 px-2 py-1 text-danger ring-1 ring-red-200">High {counts.high}</span>
             <span className="rounded bg-amber-50 px-2 py-1 text-warn ring-1 ring-amber-200">Medium {counts.medium}</span>
@@ -120,6 +130,7 @@ export function EventFeed({ assets }: Props) {
                 <th className="px-4 py-2 font-medium">Time</th>
                 <th className="px-4 py-2 font-medium">Asset</th>
                 <th className="px-4 py-2 font-medium">Severity</th>
+                <th className="px-4 py-2 font-medium">Quality</th>
                 <th className="px-4 py-2 font-medium">Signal</th>
                 <th className="px-4 py-2 font-medium">Evidence</th>
                 <th className="px-4 py-2 font-medium">Source</th>
@@ -128,14 +139,14 @@ export function EventFeed({ assets }: Props) {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td className="px-4 py-8 text-center text-muted" colSpan={6}>
+                  <td className="px-4 py-8 text-center text-muted" colSpan={7}>
                     이벤트 로드 중
                   </td>
                 </tr>
               )}
               {!isLoading && events.length === 0 && (
                 <tr>
-                  <td className="px-4 py-8 text-center text-muted" colSpan={6}>
+                  <td className="px-4 py-8 text-center text-muted" colSpan={7}>
                     필터 조건에 맞는 이벤트가 없습니다.
                   </td>
                 </tr>
@@ -152,6 +163,9 @@ export function EventFeed({ assets }: Props) {
                       <span className={`inline-flex rounded px-2 py-1 text-xs font-medium ring-1 ${severityClass(event.severity)}`}>
                         {event.severity}
                       </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <QualityBadge event={event} />
                     </td>
                     <td className="max-w-[360px] px-4 py-3">
                       <div className="font-medium text-ink">{event.title}</div>
@@ -170,6 +184,30 @@ export function EventFeed({ assets }: Props) {
       </div>
     </section>
   );
+}
+
+function QualityBadge({ event }: { event: SignalEvent }) {
+  const className =
+    event.data_quality === "investor_grade"
+      ? "bg-emerald-50 text-accent ring-emerald-200"
+      : event.data_quality === "research_only"
+        ? "bg-amber-50 text-warn ring-amber-200"
+        : "bg-slate-50 text-muted ring-slate-200";
+  return (
+    <div className="max-w-[180px]">
+      <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium ring-1 ${className}`}>
+        <ShieldCheck className="h-3.5 w-3.5" />
+        {qualityLabel(event.data_quality)}
+      </span>
+      <p className="mt-1 text-xs leading-4 text-muted">{event.quality_reason}</p>
+    </div>
+  );
+}
+
+function qualityLabel(value: string): string {
+  if (value === "investor_grade") return "Investor-grade";
+  if (value === "research_only") return "Research-only";
+  return "Unavailable";
 }
 
 function EvidenceLinks({ evidence }: { evidence: Record<string, unknown> }) {
